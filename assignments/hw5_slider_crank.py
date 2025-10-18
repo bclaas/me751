@@ -11,7 +11,8 @@
 ## =============================================================================
 
 import pychrono as chrono
-import pychrono.vsg3d as vsg
+#import pychrono.vsg3d as vsg
+import pychrono.irrlicht as chronoirr
 import numpy as np
 
 system = chrono.ChSystemNSC()
@@ -107,15 +108,20 @@ system.AddLink(joint_c)
 
 
 # Prepare visualization with VSG
-vis = vsg.ChVisualSystemVSG()
+#vis = vsg.ChVisualSystemVSG()
+vis = chronoirr.ChVisualSystemIrrlicht()
 vis.AttachSystem(system)
 vis.SetWindowSize(1024,768)
 vis.SetWindowTitle('slider crank demo')
-vis.AddCamera(chrono.ChVector3d(-0.5, 0.5, 5), chrono.ChVector3d(0,0,0))
-vis.SetCameraVertical(chrono.CameraVerticalDir_Y)
-vis.EnableSkyBox()
-
 vis.Initialize()
+vis.AddCamera(chrono.ChVector3d(-0.5, 0.5, 5), chrono.ChVector3d(0,0,0))
+#vis.SetCameraVertical(chrono.CameraVerticalDir_Y)
+#vis.EnableSkyBox()
+
+# Irrlicht
+vis.AddSkyBox()
+vis.AddTypicalLights()
+
 while vis.Run():
     vis.BeginScene()
     vis.Render()
