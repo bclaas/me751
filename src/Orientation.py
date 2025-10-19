@@ -54,6 +54,7 @@ class Orientation:
             [-e3, -e2,   e1,  e0]
         ], dtype=float)
 
+    @property
     def G(self):
         [e0, e1, e2, e3] = self.p
         return np.array([
