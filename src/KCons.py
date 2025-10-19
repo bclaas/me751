@@ -1,7 +1,7 @@
 import numpy as np
 from typing import Callable, Dict, Optional, Tuple, List
-from .Orientation import Orientation, vec2quat, tilde
 from .Bodies import RigidBody
+from .Orientation import Orientation, vec2quat, tilde
 
 # TODO: Make KCons inherit things from this as things get more complicated
 class KCon:
@@ -153,7 +153,7 @@ class DP2:
         ACE: \Phi^{DP2} = \bar{a_i^T} @ A_i^T @ d_{ij} - f(t) = 0
                           where d_{ij} = r_j + A_j @ \bar{s_j^Q} - r_i - A_i @ \bar{s_i^P}
         """
-        dij = self.ibody.r + self.ibody.A @ self.sjQbar - self.jbody.r - self.jbody.A @ self.siPbar
+        dij = self.jbody.r + self.jbody.A @ self.sjQbar - self.ibody.r - self.ibody.A @ self.siPbar
         phi_ = self.aibar.T @ self.ibody.A.T @ dij
 
         if isinstance(self.f, Callable):
@@ -161,7 +161,7 @@ class DP2:
         elif isinstance(self.f, List):
             ft = np.array([fii(t) if isinstance(fii, Callable) else 0.0 for fii in self.f])
         else:
-            print("WARNING: f(t) passed to DP1 is some unexpected format. Disregarding and setting f(t) to 0.0")
+            print("WARNING: f(t) passed to DP2 is some unexpected format. Disregarding and setting f(t) to 0.0")
             ft = np.zeros(7)
         
         return phi_ - ft
@@ -175,7 +175,7 @@ class DP2:
         elif isinstance(self.fdot, List):
             fdott = np.array([fii(t) if isinstance(fii, Callable) else 0.0 for fii in self.fdot])
         else:
-            print("WARNING: fdot(t) passed to DP1 is some unexpected format. Disregarding and setting fdot(t) to 0.0")
+            print("WARNING: fdot(t) passed to DP2 is some unexpected format. Disregarding and setting fdot(t) to 0.0")
             fdott = np.zeros(7)
 
         return fdott # TODO: Check sign
@@ -201,8 +201,198 @@ class DP2:
         elif isinstance(self.fddot, List):
             fddott = np.array([fii(t) if isinstance(fii, Callable) else 0.0 for fii in self.fddot])
         else:
-            print("WARNING: fddot(t) passed to DP1 is some unexpected format. Disregarding and setting fddot(t) to 0.0")
+            print("WARNING: fddot(t) passed to DP2 is some unexpected format. Disregarding and setting fddot(t) to 0.0")
             fddott = np.zeros(7)
 
         return fddott - gamma_
 
+
+class D:
+    """Fixes distance between two points"""
+    def __init__(self,
+                 ibody: RigidBody,
+                 siPbar: np.ndarray,
+                 jbody: RigidBody,
+                 sjQbar: np.ndarray,
+                 f: List[Callable]=None,
+                 fdot: List[Callable]=None,
+                 fddot: List[Callable]=None):
+        """
+        ibody (RigidBody): I body
+        siPbar (np.ndarray): Location of Point P on ibody in L-RFi
+        jbody (RigidBody): J body
+        sjQbar (np.ndarray): Location of Point Q on jbody in L-RFj
+        f (Callable): Dot product offset, as function of time.
+        fdot (Callable): Time derivative of f, as function of time.
+        fddot (Callable): Second time derivative of f, as function of time.
+        """
+        super().__init__(ibody, jbody)
+        self.siPbar = siPbar
+        self.sjQbar = sjQbar
+
+        if f is None:
+            self.f = lambda t: 0.0
+        else:
+            self.f = f
+        
+        if fdot is None:
+            self.fdot = lambda t: 0.0
+        else:
+            self.fdot = fdot
+        
+        if fddot is None:
+            self.fddot = lambda t: 0.0
+        else:
+            self.fddot = fddot
+    
+    def phi(self, t):
+        """
+        ACE: \Phi^{D} = d_{ij}^T @ d_{ij} = 0
+                          where d_{ij} = r_j + A_j @ \bar{s_j^Q} - r_i - A_i @ \bar{s_i^P}
+        """
+        dij = self.jbody.r + self.jbody.A @ self.sjQbar - self.ibody.r - self.ibody.A @ self.siPbar
+        phi_ = dij.T @ dij
+
+        if isinstance(self.f, Callable):
+            ft = np.array(7*[self.f(t)])
+        elif isinstance(self.f, List):
+            ft = np.array([fii(t) if isinstance(fii, Callable) else 0.0 for fii in self.f])
+        else:
+            print("WARNING: f(t) passed to DP2 is some unexpected format. Disregarding and setting f(t) to 0.0")
+            ft = np.zeros(7)
+        
+        return phi_ - ft
+    
+    def nu(self, t):
+        """
+        L1 RHS: \nu^{D} = \dot{f}(t)
+        """
+        if isinstance(self.fdot, Callable):
+            fdott = np.array(7*[self.fdot(t)])
+        elif isinstance(self.fdot, List):
+            fdott = np.array([fii(t) if isinstance(fii, Callable) else 0.0 for fii in self.fdot])
+        else:
+            print("WARNING: fdot(t) passed to D is some unexpected format. Disregarding and setting fdot(t) to 0.0")
+            fdott = np.zeros(7)
+
+        return fdott # TODO: Check sign
+
+    def gamma(self, t, rdoti, rdotj, pdoti, pdotj):
+        """
+        L2 RHS: \ddot{f}(t) - 2||\dot{d_{ij}}||^2 - 2*d_{ij}^T(\tilde{\omega_j}\tilde{\omega_j}s_j - \tilde{\omega_i}\tilde{\omega_i}s_i)
+                where \dot{d_{ij}} = \dot{r_j} - \dot{r_i} + \tilde{\omega_j}s_j - \tilde{\omega_i}s_i 
+        """
+
+        si = self.ibody.A @ self.siPbar
+        sj = self.jbody.A @ self.sjQbar
+        witil = tilde(2*self.ibody.E @ pdoti)   # \tilde{\omega_i} = skew(2*E_i @ \dot{p}_i)
+        wjtil = tilde(2*self.jbody.E @ pdotj)   # "   "
+        dij = self.jbody.r + self.jbody.A @ self.sjQbar - self.ibody.r - self.ibody.A @ self.siPbar
+        dijdot = rdotj - rdoti + wjtil @ sj - witil @ si
+
+        gamma_ = dijdot.T @ dijdot - 2*dij.T @ (wjtil @ wjtil @ sj - witil @ witil @ si)
+        if isinstance(self.fddot, Callable):
+            fddott = np.array(7*[self.fddot(t)])
+        elif isinstance(self.fddot, List):
+            fddott = np.array([fii(t) if isinstance(fii, Callable) else 0.0 for fii in self.fddot])
+        else:
+            print("WARNING: fddot(t) passed to D is some unexpected format. Disregarding and setting fddot(t) to 0.0")
+            fddott = np.zeros(7)
+
+        return fddott - gamma_
+
+
+class CD:
+    """coordinate Difference. Directly constrains a coordinate difference between two points"""
+    def __init__(self,
+                 c: np.ndarray,
+                 ibody: RigidBody,
+                 siPbar: np.ndarray,
+                 jbody: RigidBody,
+                 sjQbar: np.ndarray,
+                 f: List[Callable]=None,
+                 fdot: List[Callable]=None,
+                 fddot: List[Callable]=None):
+        """
+        ibody (RigidBody): I body
+        c (np.ndarray): Vector (in G-RF) along which to apply constraint 
+        siPbar (np.ndarray): Location of Point P on ibody in L-RFi
+        jbody (RigidBody): J body
+        sjQbar (np.ndarray): Location of Point Q on jbody in L-RFj
+        f (Callable): Dot product offset, as function of time.
+        fdot (Callable): Time derivative of f, as function of time.
+        fddot (Callable): Second time derivative of f, as function of time.
+        """
+        super().__init__(ibody, jbody)
+        self.c = c
+        self.siPbar = siPbar
+        self.sjQbar = sjQbar
+
+        if f is None:
+            self.f = lambda t: 0.0
+        else:
+            self.f = f
+        
+        if fdot is None:
+            self.fdot = lambda t: 0.0
+        else:
+            self.fdot = fdot
+        
+        if fddot is None:
+            self.fddot = lambda t: 0.0
+        else:
+            self.fddot = fddot
+    
+    def phi(self, t):
+        """
+        ACE: \Phi^{CD} = c^T @ d_{ij} - f(t) = 0
+                          where d_{ij} = r_j + A_j @ \bar{s_j^Q} - r_i - A_i @ \bar{s_i^P}
+        """
+        dij = self.jbody.r + self.jbody.A @ self.sjQbar - self.ibody.r - self.ibody.A @ self.siPbar
+        phi_ = self.c.T @ dij
+
+        if isinstance(self.f, Callable):
+            ft = np.array(7*[self.f(t)])
+        elif isinstance(self.f, List):
+            ft = np.array([fii(t) if isinstance(fii, Callable) else 0.0 for fii in self.f])
+        else:
+            print("WARNING: f(t) passed to DP2 is some unexpected format. Disregarding and setting f(t) to 0.0")
+            ft = np.zeros(7)
+        
+        return phi_ - ft
+    
+    def nu(self, t):
+        """
+        L1 RHS: \nu^{CD} = \dot{f}(t)
+        """
+        if isinstance(self.fdot, Callable):
+            fdott = np.array(7*[self.fdot(t)])
+        elif isinstance(self.fdot, List):
+            fdott = np.array([fii(t) if isinstance(fii, Callable) else 0.0 for fii in self.fdot])
+        else:
+            print("WARNING: fdot(t) passed to D is some unexpected format. Disregarding and setting fdot(t) to 0.0")
+            fdott = np.zeros(7)
+
+        return fdott # TODO: Check sign
+
+    def gamma(self, t, pdoti, pdotj):
+        """
+        L2 RHS: \ddot{f}(t) - c^T - (\tilde{\omega_j}\tilde{\omega_j}s_j - \tilde{\omega_i}\tilde{\omega_i}s_i)
+                where \dot{d_{ij}} = \dot{r_j} - \dot{r_i} + \tilde{\omega_j}s_j - \tilde{\omega_i}s_i 
+        """
+
+        si = self.ibody.A @ self.siPbar
+        sj = self.jbody.A @ self.sjQbar
+        witil = tilde(2*self.ibody.E @ pdoti)   # \tilde{\omega_i} = skew(2*E_i @ \dot{p}_i)
+        wjtil = tilde(2*self.jbody.E @ pdotj)   # "   "
+
+        gamma_ = self.c.T @ (wjtil @ wjtil @ sj - witil @ witil @ si)
+        if isinstance(self.fddot, Callable):
+            fddott = np.array(7*[self.fddot(t)])
+        elif isinstance(self.fddot, List):
+            fddott = np.array([fii(t) if isinstance(fii, Callable) else 0.0 for fii in self.fddot])
+        else:
+            print("WARNING: fddot(t) passed to CD is some unexpected format. Disregarding and setting fddot(t) to 0.0")
+            fddott = np.zeros(7)
+
+        return fddott - gamma_
