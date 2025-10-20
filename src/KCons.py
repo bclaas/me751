@@ -3,6 +3,37 @@ from typing import Callable, Dict, Optional, Tuple, List
 from .Bodies import RigidBody
 from .Orientation import Orientation, vec2quat, tilde
 
+def _get_Bmat(p: np.ndarray, s: np.ndarray) -> np.ndarray:
+    """
+    Return the 3x4 matrix B(p,s) = d(A(p) s)/dp for Euler parameters p = [e0,e1,e2,e3].
+
+    p : (4,) array_like
+        Euler parameters [e0, e1, e2, e3].
+    s : (3,) array_like
+        A 3-vector in the G-RF frame to be rotated by A(p).
+
+    Returns
+    Bmat : (3,4) ndarray
+        Column j is d(A(p)s)/dp_j for j=0..3.
+    """
+    p = np.asarray(p, dtype=float).reshape(4)
+    s = np.asarray(s, dtype=float).reshape(3)
+    e0 = p[0]
+    e  = p[1:]                # (3,)
+    Bmat = np.empty((3, 4), dtype=float)
+
+    Bmat[:, 0] = 4.0 * e0 * s + 2.0 * np.cross(e, s)
+
+    # columns for d/de1, d/de2, d/de3
+    I = np.eye(3)
+    es = float(e @ s)         # scalar (e^T s)
+    for k in range(3):
+        ek = I[:, k]          # kth Cartesian basis vector
+        term = es * ek + e * s[k] + e0 * np.cross(ek, s)
+        Bmat[:, k+1] = 2.0 * term
+
+    return Bmat
+
 # TODO: Make KCons inherit things from this as things get more complicated
 class KCon:
     def __init__(self, ibody, jbody):
@@ -68,6 +99,17 @@ class DP1:
             ft = np.zeros(7)
         
         return phi_ - ft
+
+    def phi_r(self):
+        return [np.zeros(3), np.zeros(3)]
+    
+    def phi_p(self):
+        ai = self.ibody.A @ self.aibar
+        aj = self.jbody.A @ self.ajbar
+
+        phi_pi = ai.T @ _get_Bmat(self.ibody.p, self.aibar)
+        phi_pj = aj.T @ _get_Bmat(self.jbody.p, self.ajbar)
+        return [phi_pi, phi_pj]
     
     def nu(self, t):
         """
@@ -287,7 +329,7 @@ class D:
         sj = self.jbody.A @ self.sjQbar
         witil = tilde(2*self.ibody.E @ pdoti)   # \tilde{\omega_i} = skew(2*E_i @ \dot{p}_i)
         wjtil = tilde(2*self.jbody.E @ pdotj)   # "   "
-        dij = self.jbody.r + self.jbody.A @ self.sjQbar - self.ibody.r - self.ibody.A @ self.siPbar
+        dij = self.jbody.r + sj - self.ibody.r - si
         dijdot = rdotj - rdoti + wjtil @ sj - witil @ si
 
         gamma_ = dijdot.T @ dijdot - 2*dij.T @ (wjtil @ wjtil @ sj - witil @ witil @ si)
