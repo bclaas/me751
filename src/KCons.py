@@ -7,34 +7,26 @@ def _get_Bmat(p: np.ndarray, s: np.ndarray) -> np.ndarray:
     """
     Return the 3x4 matrix B(p,s) = d(A(p) s)/dp for Euler parameters p = [e0,e1,e2,e3].
 
-    p : (4,) array_like
-        Euler parameters [e0, e1, e2, e3].
-    s : (3,) array_like
-        A 3-vector in the G-RF frame to be rotated by A(p).
+    p (np.ndarray): Euler parameters [e0, e1, e2, e3].
+    s (np.ndarray): A 3-vector in the G-RF frame to be rotated by A(p).
 
     Returns
     Bmat : (3,4) ndarray
-        Column j is d(A(p)s)/dp_j for j=0..3.
     """
     p = np.asarray(p, dtype=float).reshape(4)
     s = np.asarray(s, dtype=float).reshape(3)
     e0 = p[0]
-    e  = p[1:]                # (3,)
-    Bmat = np.empty((3, 4), dtype=float)
+    e  = p[1:]
+    etil = tilde(e)
+    Bmat = np.zeros((3, 4))
+    e0I = e0 * np.eye(3)
 
-    Bmat[:, 0] = 4.0 * e0 * s + 2.0 * np.cross(e, s)
-
-    # columns for d/de1, d/de2, d/de3
-    I = np.eye(3)
-    es = float(e @ s)         # scalar (e^T s)
-    for k in range(3):
-        ek = I[:, k]          # kth Cartesian basis vector
-        term = es * ek + e * s[k] + e0 * np.cross(ek, s)
-        Bmat[:, k+1] = 2.0 * term
-
+    b1 = (e0I + etil) @ s   # Vector
+    b2 = e @ s.T - (e0I + etil) @ tilde(s) # 3x3 matrix
+    Bmat = np.concatenate(b1.reshape(-1,1), b2) # 3x4 matrix
     return Bmat
 
-# TODO: Make KCons inherit things from this as things get more complicated
+
 class KCon:
     def __init__(self, ibody, jbody):
         self.ibody = ibody
@@ -43,7 +35,31 @@ class KCon:
     def phi(self, q, t):
         raise NotImplementedError
     
+    def phi_r(self):
+        raise NotImplementedError
+    
+    def phi_p(self):
+        raise NotImplementedError
+    
     def phi_q(self, q, t, eps=1e-7):
+        raise NotImplementedError
+    
+    def nu(self, t):
+        """
+        L1 RHS: \dot{f}(t) 
+        (same for all base KCons)
+        """
+        if isinstance(self.fdot, Callable):
+            fdott = np.array(7*[self.fdot(t)])
+        elif isinstance(self.fdot, List):
+            fdott = np.array([fii(t) if isinstance(fii, Callable) else 0.0 for fii in self.fdot])
+        else:
+            print("WARNING: fdot(t) passed to KCon is some unexpected format. Disregarding and setting fdot(t) to 0.0")
+            fdott = np.zeros(7)
+
+        return fdott
+
+    def gamma(self):
         raise NotImplementedError
     
     
@@ -88,7 +104,7 @@ class DP1:
         """
         ACE: \Phi^{DP1} = \bar{a_i^T} @ A_i^T @ A_j @ \bar{a_j} - f(t) = 0
         """
-        phi_ = self.aibar.T @ self.ibody.A.T @ self.jbody.A @ self.ajbar
+        phi_ = self.aibar.T @ self.ibody.ori.A.T @ self.jbody.ori.A @ self.ajbar
 
         if isinstance(self.f, Callable):
             ft = np.array(7*[self.f(t)])
@@ -104,26 +120,12 @@ class DP1:
         return [np.zeros(3), np.zeros(3)]
     
     def phi_p(self):
-        ai = self.ibody.A @ self.aibar
-        aj = self.jbody.A @ self.ajbar
+        ai = self.ibody.ori.A @ self.aibar
+        aj = self.jbody.ori.A @ self.ajbar
 
         phi_pi = ai.T @ _get_Bmat(self.ibody.p, self.aibar)
         phi_pj = aj.T @ _get_Bmat(self.jbody.p, self.ajbar)
         return [phi_pi, phi_pj]
-    
-    def nu(self, t):
-        """
-        L1 RHS: \nu^{DP1} = \dot{f}(t)
-        """
-        if isinstance(self.fdot, Callable):
-            fdott = np.array(7*[self.fdot(t)])
-        elif isinstance(self.fdot, List):
-            fdott = np.array([fii(t) if isinstance(fii, Callable) else 0.0 for fii in self.fdot])
-        else:
-            print("WARNING: fdot(t) passed to DP1 is some unexpected format. Disregarding and setting fdot(t) to 0.0")
-            fdott = np.zeros(7)
-
-        return fdott # TODO: Check sign
 
     def gamma(self, t, pdoti, pdotj):
         """
@@ -131,8 +133,8 @@ class DP1:
                 where \tilde{\omega} =: \dot{A}A^T 
         """
 
-        ai = self.ibody.A @ self.aibar
-        aj = self.jbody.A @ self.ajbar
+        ai = self.ibody.ori.A @ self.aibar
+        aj = self.jbody.ori.A @ self.ajbar
         witil = tilde(2*self.ibody.E @ pdoti)   # \tilde{\omega_i} = skew(2*E_i @ \dot{p}_i)
         wjtil = tilde(2*self.jbody.E @ pdotj)   # "   "
 
@@ -195,8 +197,8 @@ class DP2:
         ACE: \Phi^{DP2} = \bar{a_i^T} @ A_i^T @ d_{ij} - f(t) = 0
                           where d_{ij} = r_j + A_j @ \bar{s_j^Q} - r_i - A_i @ \bar{s_i^P}
         """
-        dij = self.jbody.r + self.jbody.A @ self.sjQbar - self.ibody.r - self.ibody.A @ self.siPbar
-        phi_ = self.aibar.T @ self.ibody.A.T @ dij
+        dij = self.jbody.r + self.jbody.ori.A @ self.sjQbar - self.ibody.r - self.ibody.ori.A @ self.siPbar
+        phi_ = self.aibar.T @ self.ibody.ori.A.T @ dij
 
         if isinstance(self.f, Callable):
             ft = np.array(7*[self.f(t)])
@@ -207,20 +209,6 @@ class DP2:
             ft = np.zeros(7)
         
         return phi_ - ft
-    
-    def nu(self, t):
-        """
-        L1 RHS: \nu^{DP2} = \dot{f}(t)
-        """
-        if isinstance(self.fdot, Callable):
-            fdott = np.array(7*[self.fdot(t)])
-        elif isinstance(self.fdot, List):
-            fdott = np.array([fii(t) if isinstance(fii, Callable) else 0.0 for fii in self.fdot])
-        else:
-            print("WARNING: fdot(t) passed to DP2 is some unexpected format. Disregarding and setting fdot(t) to 0.0")
-            fdott = np.zeros(7)
-
-        return fdott # TODO: Check sign
 
     def gamma(self, t, rdoti, rdotj, pdoti, pdotj):
         """
@@ -228,9 +216,9 @@ class DP2:
                 where d =: (r_j + s_j) - (r_i + s_i)
         """
 
-        ai = self.ibody.A @ self.aibar
-        si = self.ibody.A @ self.siPbar
-        sj = self.jbody.A @ self.sjQbar
+        ai = self.ibody.ori.A @ self.aibar
+        si = self.ibody.ori.A @ self.siPbar
+        sj = self.jbody.ori.A @ self.sjQbar
         d = self.jbody.r + sj - self.ibody.r - si
         witil = tilde(2*self.ibody.E @ pdoti)   # \tilde{\omega_i} = skew(2*E_i @ \dot{p}_i)
         wjtil = tilde(2*self.jbody.E @ pdotj)   # "   "
@@ -292,7 +280,7 @@ class D:
         ACE: \Phi^{D} = d_{ij}^T @ d_{ij} = 0
                           where d_{ij} = r_j + A_j @ \bar{s_j^Q} - r_i - A_i @ \bar{s_i^P}
         """
-        dij = self.jbody.r + self.jbody.A @ self.sjQbar - self.ibody.r - self.ibody.A @ self.siPbar
+        dij = self.jbody.r + self.jbody.ori.A @ self.sjQbar - self.ibody.r - self.ibody.ori.A @ self.siPbar
         phi_ = dij.T @ dij
 
         if isinstance(self.f, Callable):
@@ -304,20 +292,6 @@ class D:
             ft = np.zeros(7)
         
         return phi_ - ft
-    
-    def nu(self, t):
-        """
-        L1 RHS: \nu^{D} = \dot{f}(t)
-        """
-        if isinstance(self.fdot, Callable):
-            fdott = np.array(7*[self.fdot(t)])
-        elif isinstance(self.fdot, List):
-            fdott = np.array([fii(t) if isinstance(fii, Callable) else 0.0 for fii in self.fdot])
-        else:
-            print("WARNING: fdot(t) passed to D is some unexpected format. Disregarding and setting fdot(t) to 0.0")
-            fdott = np.zeros(7)
-
-        return fdott # TODO: Check sign
 
     def gamma(self, t, rdoti, rdotj, pdoti, pdotj):
         """
@@ -325,8 +299,8 @@ class D:
                 where \dot{d_{ij}} = \dot{r_j} - \dot{r_i} + \tilde{\omega_j}s_j - \tilde{\omega_i}s_i 
         """
 
-        si = self.ibody.A @ self.siPbar
-        sj = self.jbody.A @ self.sjQbar
+        si = self.ibody.ori.A @ self.siPbar
+        sj = self.jbody.ori.A @ self.sjQbar
         witil = tilde(2*self.ibody.E @ pdoti)   # \tilde{\omega_i} = skew(2*E_i @ \dot{p}_i)
         wjtil = tilde(2*self.jbody.E @ pdotj)   # "   "
         dij = self.jbody.r + sj - self.ibody.r - si
@@ -345,7 +319,7 @@ class D:
 
 
 class CD:
-    """coordinate Difference. Directly constrains a coordinate difference between two points"""
+    """Coordinate Difference. Directly constrains a coordinate difference between two points"""
     def __init__(self,
                  c: np.ndarray,
                  ibody: RigidBody,
@@ -390,7 +364,7 @@ class CD:
         ACE: \Phi^{CD} = c^T @ d_{ij} - f(t) = 0
                           where d_{ij} = r_j + A_j @ \bar{s_j^Q} - r_i - A_i @ \bar{s_i^P}
         """
-        dij = self.jbody.r + self.jbody.A @ self.sjQbar - self.ibody.r - self.ibody.A @ self.siPbar
+        dij = self.jbody.r + self.jbody.ori.A @ self.sjQbar - self.ibody.r - self.ibody.ori.A @ self.siPbar
         phi_ = self.c.T @ dij
 
         if isinstance(self.f, Callable):
@@ -402,20 +376,6 @@ class CD:
             ft = np.zeros(7)
         
         return phi_ - ft
-    
-    def nu(self, t):
-        """
-        L1 RHS: \nu^{CD} = \dot{f}(t)
-        """
-        if isinstance(self.fdot, Callable):
-            fdott = np.array(7*[self.fdot(t)])
-        elif isinstance(self.fdot, List):
-            fdott = np.array([fii(t) if isinstance(fii, Callable) else 0.0 for fii in self.fdot])
-        else:
-            print("WARNING: fdot(t) passed to D is some unexpected format. Disregarding and setting fdot(t) to 0.0")
-            fdott = np.zeros(7)
-
-        return fdott # TODO: Check sign
 
     def gamma(self, t, pdoti, pdotj):
         """
@@ -423,8 +383,8 @@ class CD:
                 where \dot{d_{ij}} = \dot{r_j} - \dot{r_i} + \tilde{\omega_j}s_j - \tilde{\omega_i}s_i 
         """
 
-        si = self.ibody.A @ self.siPbar
-        sj = self.jbody.A @ self.sjQbar
+        si = self.ibody.ori.A @ self.siPbar
+        sj = self.jbody.ori.A @ self.sjQbar
         witil = tilde(2*self.ibody.E @ pdoti)   # \tilde{\omega_i} = skew(2*E_i @ \dot{p}_i)
         wjtil = tilde(2*self.jbody.E @ pdotj)   # "   "
 
