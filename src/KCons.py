@@ -41,8 +41,11 @@ class KCon:
     def phi_p(self):
         raise NotImplementedError
     
-    def phi_q(self, q, t, eps=1e-7):
-        raise NotImplementedError
+    def phi_q(self):
+        """Return [phi_ri, phi_pi, phi_ri, phi_rj]"""
+        [phi_ri, phi_rj] = self.phi_r()
+        [phi_pi, phi_pj] = self.phi_p()
+        return [phi_ri, phi_pi, phi_rj, phi_pj]
     
     def nu(self, t):
         """
@@ -123,8 +126,8 @@ class DP1:
         ai = self.ibody.ori.A @ self.aibar
         aj = self.jbody.ori.A @ self.ajbar
 
-        phi_pi = ai.T @ _get_Bmat(self.ibody.p, self.aibar)
-        phi_pj = aj.T @ _get_Bmat(self.jbody.p, self.ajbar)
+        phi_pi = ai.T @ _get_Bmat(self.ibody.ori.p, self.aibar)
+        phi_pj = aj.T @ _get_Bmat(self.jbody.ori.p, self.ajbar)
         return [phi_pi, phi_pj]
 
     def gamma(self, t, pdoti, pdotj):
@@ -135,8 +138,8 @@ class DP1:
 
         ai = self.ibody.ori.A @ self.aibar
         aj = self.jbody.ori.A @ self.ajbar
-        witil = tilde(2*self.ibody.E @ pdoti)   # \tilde{\omega_i} = skew(2*E_i @ \dot{p}_i)
-        wjtil = tilde(2*self.jbody.E @ pdotj)   # "   "
+        witil = tilde(2*self.ibody.ori.E @ pdoti)   # \tilde{\omega_i} = skew(2*E_i @ \dot{p}_i)
+        wjtil = tilde(2*self.jbody.ori.E @ pdotj)   # "   "
 
         gamma_ = aj.T @ witil @ witil @ ai - ai.T @ wjtil @ wjtil @ aj - 2*(np.dot(witil @ ai, wjtil @ aj))
 
@@ -209,6 +212,20 @@ class DP2:
             ft = np.zeros(7)
         
         return phi_ - ft
+    
+    def phi_r(self):
+        phi_ri = -self.aibar.T
+        dij = self.jbody.r + self.jbody.ori.A @ self.sjQbar - self.ibody.r - self.ibody.ori.A @ self.siPbar
+        aiT = ( self.ibody.ori.A @ self.aibar ).T
+        phi_ri = -aiT
+        phi_rj = dij.T @ _get_Bmat(self.ibody.ori.p, self.aibar) - aiT @ _get_Bmat(self.ibody.ori.p, self.siPbar)
+        return [phi_ri, phi_rj]
+    
+    def phi_p(self):
+        aiT = ( self.ibody.ori.A @ self.aibar ).T
+        phi_pi = aiT
+        phi_pj = aiT @ _get_Bmat(self.jbody.ori.p, self.sjQbar)
+        return [phi_pi, phi_pj]
 
     def gamma(self, t, rdoti, rdotj, pdoti, pdotj):
         """
@@ -220,8 +237,8 @@ class DP2:
         si = self.ibody.ori.A @ self.siPbar
         sj = self.jbody.ori.A @ self.sjQbar
         d = self.jbody.r + sj - self.ibody.r - si
-        witil = tilde(2*self.ibody.E @ pdoti)   # \tilde{\omega_i} = skew(2*E_i @ \dot{p}_i)
-        wjtil = tilde(2*self.jbody.E @ pdotj)   # "   "
+        witil = tilde(2*self.ibody.ori.E @ pdoti)   # \tilde{\omega_i} = skew(2*E_i @ \dot{p}_i)
+        wjtil = tilde(2*self.jbody.ori.E @ pdotj)   # "   "
 
         h1 = wjtil @ wjtil @ sj - witil @ witil @ si    # Intermediate value
         gamma_ = np.dot(witil @ witil @ ai, d) - 2*np.dot(witil @ ai, rdotj - rdoti + wjtil @ sj - witil @ si) - ai.T @ h1
@@ -292,6 +309,18 @@ class D:
             ft = np.zeros(7)
         
         return phi_ - ft
+    
+    def phi_r(self):
+        dij = self.jbody.r + self.jbody.ori.A @ self.sjQbar - self.ibody.r - self.ibody.ori.A @ self.siPbar
+        phi_rj = 2 * dij.T
+        phi_ri = -phi_rj
+        return [phi_ri, phi_rj]
+
+    def phi_p(self):
+        dij = self.jbody.r + self.jbody.ori.A @ self.sjQbar - self.ibody.r - self.ibody.ori.A @ self.siPbar
+        phi_pi = -2*dij.T @ _get_Bmat(self.ibody.ori.p, self.siPbar)
+        phi_pj = 2*dij.T @ _get_Bmat(self.jbody.ori.p, self.sjQbar)
+        return [phi_pi, phi_pj]
 
     def gamma(self, t, rdoti, rdotj, pdoti, pdotj):
         """
@@ -301,8 +330,8 @@ class D:
 
         si = self.ibody.ori.A @ self.siPbar
         sj = self.jbody.ori.A @ self.sjQbar
-        witil = tilde(2*self.ibody.E @ pdoti)   # \tilde{\omega_i} = skew(2*E_i @ \dot{p}_i)
-        wjtil = tilde(2*self.jbody.E @ pdotj)   # "   "
+        witil = tilde(2*self.ibody.ori.E @ pdoti)   # \tilde{\omega_i} = skew(2*E_i @ \dot{p}_i)
+        wjtil = tilde(2*self.jbody.ori.E @ pdotj)   # "   "
         dij = self.jbody.r + sj - self.ibody.r - si
         dijdot = rdotj - rdoti + wjtil @ sj - witil @ si
 
@@ -377,6 +406,16 @@ class CD:
         
         return phi_ - ft
 
+    def phi_r(self):
+        phi_rj = self.c.T
+        phi_ri = -phi_rj
+        return [phi_ri, phi_rj]
+
+    def phi_p(self):
+        phi_pi = -self.c.T @ _get_Bmat(self.ibody.ori.p, self.siPbar)
+        phi_pj = self.c.T @ _get_Bmat(self.jbody.ori.p, self.sjQbar)
+        return [phi_pi, phi_pj]
+
     def gamma(self, t, pdoti, pdotj):
         """
         L2 RHS: \ddot{f}(t) - c^T - (\tilde{\omega_j}\tilde{\omega_j}s_j - \tilde{\omega_i}\tilde{\omega_i}s_i)
@@ -385,8 +424,8 @@ class CD:
 
         si = self.ibody.ori.A @ self.siPbar
         sj = self.jbody.ori.A @ self.sjQbar
-        witil = tilde(2*self.ibody.E @ pdoti)   # \tilde{\omega_i} = skew(2*E_i @ \dot{p}_i)
-        wjtil = tilde(2*self.jbody.E @ pdotj)   # "   "
+        witil = tilde(2*self.ibody.ori.E @ pdoti)   # \tilde{\omega_i} = skew(2*E_i @ \dot{p}_i)
+        wjtil = tilde(2*self.jbody.ori.E @ pdotj)   # "   "
 
         gamma_ = self.c.T @ (wjtil @ wjtil @ sj - witil @ witil @ si)
         if isinstance(self.fddot, Callable):
