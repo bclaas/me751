@@ -3,6 +3,7 @@ import importlib
 __all__ = ["RigidBody", "Orientation", "KCon", "DP1", "DP2", "D", "CD"]
 
 _exports = {
+    "Assembly":    ("me751.Assembly",    "Assembly"),
     "RigidBody":   ("me751.Bodies",      "RigidBody"),
     "Orientation": ("me751.Orientation", "Orientation"),
     "KCon":        ("me751.KCons",       "KCon"),
