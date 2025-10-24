@@ -46,47 +46,43 @@ class Assembly:
 
     def get_Phi(self, t: float) -> np.ndarray:
         rows = []
-        for j in self.joints:
-            for kc in j.kcons:
-                rows.append(np.atleast_1d(kc.phi(t)))
+        for J in self.joints:
+            # TODO: Account for joints with >1 ACE
+            rows.append(np.atleast_1d(J.phi(t)))
 
         return np.concatenate(rows).reshape(-1,)
 
     def get_Phi_q(self, t: float) -> np.ndarray:
-        #m = self.nb + len(self.kcons) # TODO: Update for higher-order constraints
         # For now, 1 ACE per KCon because only using primitives. Second half of above needs to change when >1 ACE per KCon
         
         m = len(self.joints)
         Phi_q = np.zeros((m, self.nq))
         row = 0
         for J in self.joints:
-            for kc in J.kcons:
-                # each KCon returns [phi_ri, phi_rj, phi_pi, phi_pj]
-                pri, prj = kc.phi_r()
-                ppi, ppj = kc.phi_p()
-                # place into global Jacobian
-                ii = 7*kc.ibody._id
-                jj = 7*kc.jbody._id
-                Phi_q[row, ii:ii+3] = pri
+            # TODO: Account for joints with >1 ACE
+            # each KCon returns [phi_ri, phi_rj, phi_pi, phi_pj]
+            pri, prj = J.phi_r()
+            ppi, ppj = J.phi_p()
+            # place into global Jacobian
+            ii = 7*J.ibody._id
+            Phi_q[row, ii:ii+3] = pri
+            Phi_q[row, ii+3:ii+7] = ppi
+
+            if not J.jbody._is_ground:
+                jj = 7*J.jbody._id
                 Phi_q[row, jj:jj+3] = prj
-                Phi_q[row, ii+3:ii+7] = ppi
                 Phi_q[row, jj+3:jj+7] = ppj
-                row += 1
-        
-        # Enforce quaternion renormalization
-        #for pp in range(self.nb):
-        #    idx1 = 7*pp+3
-        #    idx2 = idx1+4
-        #    Phi_q[row, idx1:idx2] = np.ones(4)
-        #    row += 1
+
+            row += 1
 
         return Phi_q
 
     def get_nu(self, t: float) -> np.ndarray:
         rows = []
         for J in self.joints:
-            for kc in J.kcons:
-                rows.append(np.atleast_1d(kc.nu(t)))
+            # TODO: Account for joints with >1 ACE
+            rows.append(np.atleast_1d(J.nu(t)))
+
         return np.concatenate(rows).reshape(-1,)
 
     def gamma(self, t: float, qdot: np.ndarray) -> np.ndarray:
@@ -98,7 +94,7 @@ class Assembly:
             pdots.append(qdot[i+3:i+7])
         rows = []
         for J in self.joints:
-            for kc in J.kcons:
+            for kc in J.joints:
                 ib = self._body_index[kc.ibody._id]
                 jb = self._body_index[kc.jbody._id]
                 rows.append(np.atleast_1d(kc.gamma(

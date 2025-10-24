@@ -65,6 +65,7 @@ def A_to_p(A: np.ndarray):
         p = -p
     
     return p
+
 class Orientation:
     def __init__(self, e0, e1, e2, e3):
         """
@@ -77,7 +78,7 @@ class Orientation:
     
     @property
     def p(self):
-        return [self.e0, self.e1, self.e2, self.e3]
+        return np.array([self.e0, self.e1, self.e2, self.e3])
     
     @property
     def A(self):

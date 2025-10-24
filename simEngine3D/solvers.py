@@ -10,6 +10,8 @@ def run_positionAnalysis(asy: Assembly, dt: float, end_time: float, inner_iters=
         q[7*bdy._id:7*bdy._id+3] = bdy.r
         q[7*bdy._id+3:7*bdy._id+7] = bdy.ori.p
 
+    results = []
+
     t = 0.0
     while t < end_time:
         for _ in range(inner_iters):
@@ -22,7 +24,7 @@ def run_positionAnalysis(asy: Assembly, dt: float, end_time: float, inner_iters=
             phi = np.zeros(m)
             phi[0:m0] = phi_base
             jac = np.zeros((m, m))
-            jac[0:m0,0:m0] = jac_base
+            jac[0:m0,0:m0+1] = jac_base
 
             # Add holonomic Euler Parameter normalization constraints
             for ii, bdy in enumerate(asy.bodies):
@@ -35,7 +37,8 @@ def run_positionAnalysis(asy: Assembly, dt: float, end_time: float, inner_iters=
             
             # Dims of jac should be mxm at this point
             # Newton-Raphson
-            correction = np.linalg.solve(jac, phi)
+            #correction = np.linalg.solve(jac, phi)
+            correction, *_ = np.linalg.lstsq(jac, phi, rcond=None)  # HACK
             q = q - correction
 
             for idx in range(asy.nb):
@@ -44,6 +47,8 @@ def run_positionAnalysis(asy: Assembly, dt: float, end_time: float, inner_iters=
                 asy.bodies[idx].r = new_r
                 asy.bodies[idx].ori.set_p(new_p)
 
-        # TODO: Save out results or whatever
+        results.append(np.append(q, t))
 
         t = t + dt
+    
+    return np.array(results)
