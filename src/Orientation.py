@@ -62,3 +62,6 @@ class Orientation:
             [-e2, -e3,   e0,  e1],
             [-e3,  e2,  -e1,  e0]
         ], dtype=float)
+    
+    def set_p(self, p_new: np.ndarray):
+        [self.e0, self.e1, self.e2, self.e3] = p_new

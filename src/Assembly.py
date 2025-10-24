@@ -56,7 +56,7 @@ class Assembly:
         #m = self.nb + len(self.kcons) # TODO: Update for higher-order constraints
         # For now, 1 ACE per KCon because only using primitives. Second half of above needs to change when >1 ACE per KCon
         
-        m = len(self.kcons)
+        m = len(self.joints)
         Phi_q = np.zeros((m, self.nq))
         row = 0
         for J in self.joints:
