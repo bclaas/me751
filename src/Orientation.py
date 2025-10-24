@@ -1,5 +1,5 @@
 import numpy as np
-from typing import Callable, Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple, Union
 
 def vec2quat(theta: float, u: np.ndarray) -> np.ndarray:
     """ 
@@ -22,6 +22,49 @@ def tilde(v: np.ndarray):
                      [z, 0,-x],
                      [-y, x, 0]], float)
 
+def A_to_p(A: np.ndarray):
+
+    # Project A to the nearest element of SO(3) to avoid drift
+    U, S, Vt = np.linalg.svd(A)
+    R = U @ Vt
+    if np.linalg.det(R) < 0.0:  # enforce right-handedness
+        U[:, -1] *= -1
+        R = U @ Vt
+
+    tr = np.trace(R)
+
+    if tr > 0.0:
+        S = np.sqrt(tr + 1.0) * 2.0
+        e0 = 0.25 * S
+        e1 = (R[2,1] - R[1,2]) / S
+        e2 = (R[0,2] - R[2,0]) / S
+        e3 = (R[1,0] - R[0,1]) / S
+    else:
+        if (R[0,0] > R[1,1]) and (R[0,0] > R[2,2]):
+            S = np.sqrt(1.0 + R[0,0] - R[1,1] - R[2,2]) * 2.0
+            e0 = (R[2,1] - R[1,2]) / S
+            e1 = 0.25 * S
+            e2 = (R[0,1] + R[1,0]) / S
+            e3 = (R[0,2] + R[2,0]) / S
+        elif R[1,1] > R[2,2]:
+            S = np.sqrt(1.0 + R[1,1] - R[0,0] - R[2,2]) * 2.0
+            e0 = (R[0,2] - R[2,0]) / S
+            e1 = (R[0,1] + R[1,0]) / S
+            e2 = 0.25 * S
+            e3 = (R[1,2] + R[2,1]) / S
+        else:
+            S = np.sqrt(1.0 + R[2,2] - R[0,0] - R[1,1]) * 2.0
+            e0 = (R[1,0] - R[0,1]) / S
+            e1 = (R[0,2] + R[2,0]) / S
+            e2 = (R[1,2] + R[2,1]) / S
+            e3 = 0.25 * S
+
+    p = np.array([e0, e1, e2, e3], dtype=float)
+    p /= np.linalg.norm(p)
+    if p[0] < 0.0:  # fix overall sign (optional but handy for continuity)
+        p = -p
+    
+    return p
 class Orientation:
     def __init__(self, e0, e1, e2, e3):
         """

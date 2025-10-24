@@ -1,7 +1,16 @@
 import numpy as np
 from typing import Callable, Dict, Optional, Tuple, List
 from .Bodies import RigidBody
-from .Orientation import Orientation, vec2quat, tilde
+from .Orientation import Orientation, vec2quat, tilde, A_to_p
+
+def tilde(v: np.ndarray):
+    """
+    Skew-symmetric matrix generator of a vector v
+    """
+    [x,y,z] = v
+    return np.array([[0,-z, y],
+                     [z, 0,-x],
+                     [-y, x, 0]], float)
 
 def _get_Bmat(p: np.ndarray, s: np.ndarray) -> np.ndarray:
     """
@@ -18,19 +27,28 @@ def _get_Bmat(p: np.ndarray, s: np.ndarray) -> np.ndarray:
     e0 = p[0]
     e  = p[1:]
     etil = tilde(e)
-    Bmat = np.zeros((3, 4))
     e0I = e0 * np.eye(3)
 
     b1 = (e0I + etil) @ s   # Vector
-    b2 = e @ s.T - (e0I + etil) @ tilde(s) # 3x3 matrix
-    Bmat = np.concatenate(b1.reshape(-1,1), b2) # 3x4 matrix
+    b2 = np.outer(e, s) - (e0I + etil) @ tilde(s) # 3x3 matrix
+    Bmat = np.concatenate((b1.reshape(-1,1), b2), axis=1) # 3x4 matrix
     return Bmat
 
 
+
 class KCon:
-    def __init__(self, ibody, jbody):
+    def __init__(self, ibody, jbody=None):
         self.ibody = ibody
-        self.jbody = jbody
+
+        if jbody is None:
+            # jbody is ground
+            # Add dummy part
+            [e0, e1, e2, e3] = A_to_p(np.eye(3))
+            ground_ori = Orientation(e0, e1, e2, e3)
+            ground = RigidBody("Ground", np.zeros(3), ground_ori, _is_ground=True)
+            self.jbody = ground
+        else:
+            self.jbody = jbody
     
     def phi(self, q, t):
         raise NotImplementedError
@@ -53,12 +71,12 @@ class KCon:
         (same for all base KCons)
         """
         if isinstance(self.fdot, Callable):
-            fdott = np.array(7*[self.fdot(t)])
-        elif isinstance(self.fdot, List):
-            fdott = np.array([fii(t) if isinstance(fii, Callable) else 0.0 for fii in self.fdot])
+            fdott = self.fdot(t)
+        elif isinstance(self.fdot, float):
+            fdott = self.fdot
         else:
             print("WARNING: fdot(t) passed to KCon is some unexpected format. Disregarding and setting fdot(t) to 0.0")
-            fdott = np.zeros(7)
+            fdott = 0.0
 
         return fdott
 
@@ -66,12 +84,12 @@ class KCon:
         raise NotImplementedError
     
     
-class DP1:
+class DP1(KCon):
     def __init__(self,
                  ibody: RigidBody,
                  aibar: np.ndarray,
-                 jbody: RigidBody,
-                 ajbar: np.ndarray,
+                 jbody: RigidBody=None,
+                 ajbar: np.ndarray=None,
                  f: List[Callable]=None,
                  fdot: List[Callable]=None,
                  fddot: List[Callable]=None):
@@ -110,12 +128,12 @@ class DP1:
         phi_ = self.aibar.T @ self.ibody.ori.A.T @ self.jbody.ori.A @ self.ajbar
 
         if isinstance(self.f, Callable):
-            ft = np.array(7*[self.f(t)])
-        elif isinstance(self.f, List):
-            ft = np.array([fii(t) if isinstance(fii, Callable) else 0.0 for fii in self.f])
+            ft = self.f(t)
+        elif isinstance(self.f, float):
+            ft = self.f
         else:
             print("WARNING: f(t) passed to DP1 is some unexpected format. Disregarding and setting f(t) to 0.0")
-            ft = np.zeros(7)
+            ft = 0.0
         
         return phi_ - ft
 
@@ -153,8 +171,7 @@ class DP1:
 
         return fddott - gamma_
 
-
-class DP2:
+class DP2(KCon):
     """Constrains distance projection between a vector on one body (aibar) and a point on another"""
     def __init__(self,
                  ibody: RigidBody,
@@ -204,12 +221,12 @@ class DP2:
         phi_ = self.aibar.T @ self.ibody.ori.A.T @ dij
 
         if isinstance(self.f, Callable):
-            ft = np.array(7*[self.f(t)])
-        elif isinstance(self.f, List):
-            ft = np.array([fii(t) if isinstance(fii, Callable) else 0.0 for fii in self.f])
+            ft = self.f(t)
+        elif isinstance(self.f, float):
+            ft = self.f
         else:
             print("WARNING: f(t) passed to DP2 is some unexpected format. Disregarding and setting f(t) to 0.0")
-            ft = np.zeros(7)
+            ft = 0.0
         
         return phi_ - ft
     
@@ -254,7 +271,7 @@ class DP2:
         return fddott - gamma_
 
 
-class D:
+class D(KCon):
     """Fixes distance between two points"""
     def __init__(self,
                  ibody: RigidBody,
@@ -301,12 +318,12 @@ class D:
         phi_ = dij.T @ dij
 
         if isinstance(self.f, Callable):
-            ft = np.array(7*[self.f(t)])
-        elif isinstance(self.f, List):
-            ft = np.array([fii(t) if isinstance(fii, Callable) else 0.0 for fii in self.f])
+            ft = self.f(t)
+        elif isinstance(self.f, float):
+            ft = self.f
         else:
-            print("WARNING: f(t) passed to DP2 is some unexpected format. Disregarding and setting f(t) to 0.0")
-            ft = np.zeros(7)
+            print("WARNING: f(t) passed to D is some unexpected format. Disregarding and setting f(t) to 0.0")
+            ft = 0.0
         
         return phi_ - ft
     
@@ -347,14 +364,14 @@ class D:
         return fddott - gamma_
 
 
-class CD:
+class CD(KCon):
     """Coordinate Difference. Directly constrains a coordinate difference between two points"""
     def __init__(self,
                  c: np.ndarray,
                  ibody: RigidBody,
                  siPbar: np.ndarray,
-                 jbody: RigidBody,
-                 sjQbar: np.ndarray,
+                 jbody: RigidBody=None,
+                 sjQbar: np.ndarray=np.zeros(3),
                  f: List[Callable]=None,
                  fdot: List[Callable]=None,
                  fddot: List[Callable]=None):
@@ -397,12 +414,12 @@ class CD:
         phi_ = self.c.T @ dij
 
         if isinstance(self.f, Callable):
-            ft = np.array(7*[self.f(t)])
-        elif isinstance(self.f, List):
-            ft = np.array([fii(t) if isinstance(fii, Callable) else 0.0 for fii in self.f])
+            ft = self.f(t)
+        elif isinstance(self.f, float):
+            ft = self.f
         else:
-            print("WARNING: f(t) passed to DP2 is some unexpected format. Disregarding and setting f(t) to 0.0")
-            ft = np.zeros(7)
+            print("WARNING: f(t) passed to CD is some unexpected format. Disregarding and setting f(t) to 0.0")
+            ft = 0.0
         
         return phi_ - ft
 
@@ -437,3 +454,4 @@ class CD:
             fddott = np.zeros(7)
 
         return fddott - gamma_
+    

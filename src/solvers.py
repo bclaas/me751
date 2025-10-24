@@ -3,24 +3,47 @@ from .Assembly import Assembly
 from .Bodies import RigidBody
 from .KCons import KCon, DP1, DP2, D, CD
 
-def run_positionAnalysis(asy: Assembly, dt: float, end_time: float):
-    """Kinematic position analysis. Use Newton-Raphson to drive vector-valued function asy.Phi to 0."""
-    phi_base = asy.get_Phi(0.0)
-    jac_base = asy.get_Phi_q(0.0)    # Jacobian == Phi_q matrix
+def run_positionAnalysis(asy: Assembly, dt: float, end_time: float, inner_iters=25):
+    """Kinematic position analysis. Use Newton-Raphson to drive vector-valued function phi to 0."""
+    q = np.zeros(7*asy.nb)
+    for bdy in asy.bodies:
+        q[7*bdy._id:7*bdy._id+3] = bdy.r
+        q[7*bdy._id+3:7*bdy._id+7] = bdy.ori.p
 
-    n0 = len(phi)
-    n = n0 + asy.nb
+    t = 0.0
+    while t < end_time:
+        for _ in range(inner_iters):
+            phi_base = asy.get_Phi(t)
+            jac_base = asy.get_Phi_q(t)    # Jacobian == Phi_q matrix
 
-    phi = np.zeros(n)
-    phi[0:n0] = phi_base
-    jac = np.zeros((n, n))
-    jac[0:n0,0:n0] = jac_base
+            m0 = len(phi_base)
+            m = m0 + asy.nb
 
-    # Add Euler Parameter normalization constraints
-    for ii, bdy in enumerate(asy.bodies):
-        p_bdy = bdy.ori.p
-        phi[n0+ii-1] = 0.5*(p_bdy.T @ p_bdy - 1)
+            phi = np.zeros(m)
+            phi[0:m0] = phi_base
+            jac = np.zeros((m, m))
+            jac[0:m0,0:m0] = jac_base
 
-        row = np.zeros(n)
-        row[7*bdy._id+3:7*bdy._id+7] = p_bdy
-        jac[n0+ii-1,:] = row
+            # Add holonomic Euler Parameter normalization constraints
+            for ii, bdy in enumerate(asy.bodies):
+                p_bdy = bdy.ori.p
+                phi[m0+ii-1] = 0.5*(p_bdy.T @ p_bdy - 1)
+
+                row = np.zeros(m)
+                row[7*bdy._id+3:7*bdy._id+7] = p_bdy
+                jac[m0+ii-1,:] = row
+            
+            # Dims of jac should be mxm at this point
+            # Newton-Raphson
+            correction = np.linalg.solve(jac, phi)
+            q = q - correction
+
+            for idx in range(asy.nb):
+                new_r = q[7*idx:7*idx+3]
+                new_p = q[7*bdy._id+3:7*bdy._id+7]
+                asy.bodies[idx].r = new_r
+                asy.bodies[idx].ori.set_p(new_p)
+
+        # TODO: Save out results or whatever
+
+        t = t + dt

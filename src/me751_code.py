@@ -1,6 +1,6 @@
 import importlib
 
-__all__ = ["RigidBody", "Orientation", "KCon", "DP1", "DP2", "D", "CD"]
+__all__ = ["Assembly", "RigidBody", "Orientation", "KCon", "DP1", "DP2", "D", "CD"]
 
 _exports = {
     "Assembly":    ("me751.Assembly",    "Assembly"),
