@@ -31,7 +31,7 @@ def _get_Bmat(p: np.ndarray, s: np.ndarray) -> np.ndarray:
 
     b1 = (e0I + etil) @ s   # Vector
     b2 = np.outer(e, s) - (e0I + etil) @ tilde(s) # 3x3 matrix
-    Bmat = np.concatenate((b1.reshape(-1,1), b2), axis=1) # 3x4 matrix
+    Bmat = 2 * np.concatenate((b1.reshape(-1,1), b2), axis=1) # 3x4 matrix
     return Bmat
 
 def A_to_p(A: np.ndarray):
@@ -96,7 +96,7 @@ class Orientation:
     def A(self):
         [e0, e1, e2, e3] = self.p
         return 2*np.array([
-                            [e0**2 + e1**2 - 0.5, e1*e2 - e0*e3, e1*e3 - e0*e2],
+                            [e0**2 + e1**2 - 0.5, e1*e2 - e0*e3, e1*e3 + e0*e2],
                             [e1*e2 + e0*e3, e0**2 + e2**2 - 0.5, e2*e3 - e0*e1],
                             [e1*e3 - e0*e2, e2*e3 + e0*e1, e0**2 + e3**2 - 0.5]
                         ], dtype=float)
@@ -242,8 +242,8 @@ class DP1(KCon):
         ai = self.ibody.ori.A @ self.aibar
         aj = self.jbody.ori.A @ self.ajbar
 
-        phi_pi = ai.T @ _get_Bmat(self.ibody.ori.p, self.aibar)
-        phi_pj = aj.T @ _get_Bmat(self.jbody.ori.p, self.ajbar)
+        phi_pi = aj.T @ _get_Bmat(self.ibody.ori.p, self.aibar)
+        phi_pj = ai.T @ _get_Bmat(self.jbody.ori.p, self.ajbar)
         return [phi_pi, phi_pj]
 
     def gamma(self, t, pdoti, pdotj):
@@ -693,6 +693,7 @@ def run_positionAnalysis(asy: Assembly, dt: float, end_time: float, inner_iters=
     t = 0.0
     while t < end_time:
         for _ in range(inner_iters):
+            nq = asy.nq
             phi_base = asy.get_Phi(t)
             jac_base = asy.get_Phi_q(t)    # Jacobian == Phi_q matrix
 
@@ -702,16 +703,16 @@ def run_positionAnalysis(asy: Assembly, dt: float, end_time: float, inner_iters=
             phi = np.zeros(m)
             phi[0:m0] = phi_base
             jac = np.zeros((m, m))
-            jac[0:m0,0:m0+1] = jac_base
+            jac[:m0, :nq] = jac_base
 
             # Add holonomic Euler Parameter normalization constraints
             for ii, bdy in enumerate(asy.bodies):
                 p_bdy = bdy.ori.p
-                phi[m0+ii-1] = 0.5*(p_bdy.T @ p_bdy - 1)
+                phi[m0+ii] = 0.5*(p_bdy.T @ p_bdy - 1)
 
-                row = np.zeros(m)
+                row = np.zeros(nq)
                 row[7*bdy._id+3:7*bdy._id+7] = p_bdy
-                jac[m0+ii-1,:] = row
+                jac[m0+ii,:] = row
             
             # Dims of jac should be mxm at this point
             # Newton-Raphson
@@ -721,7 +722,7 @@ def run_positionAnalysis(asy: Assembly, dt: float, end_time: float, inner_iters=
 
             for idx in range(asy.nb):
                 new_r = q[7*idx:7*idx+3]
-                new_p = q[7*bdy._id+3:7*bdy._id+7]
+                new_p = q[7*idx+3:7*idx+7]
                 asy.bodies[idx].r = new_r
                 asy.bodies[idx].ori.set_p(new_p)
 
@@ -757,9 +758,10 @@ if __name__ == "__main__":
     xcon = CD(np.array([1,0,0]), pendulum, Qbar)
     ycon = CD(np.array([0,1,0]), pendulum, Qbar) 
     zcon = CD(np.array([0,0,1]), pendulum, Qbar)
-    DP1a = DP1(ibody=pendulum, aibar=np.array([1,0,0]), ajbar=np.array([1,0,0]), f=np.pi/2) # Keeps pendulum in plane of page
-    DP1b = DP1(ibody=pendulum, aibar=np.array([0,0,1]), ajbar=np.array([1,0,0]), f=0.0)     # Keeps pendulum from rotation around its own axis
-    DP1mot = DP1(ibody=pendulum, aibar=np.array([1,0,0]), ajbar=np.array([0,0,-1]), f=pen_angle)  # Enforces motion
+    fDP1 = lambda t: np.cos(pen_angle(t))
+    DP1a = DP1(ibody=pendulum, aibar=np.array([1,0,0]), ajbar=np.array([1,0,0]), f=0) # Keeps pendulum in plane of page
+    DP1b = DP1(ibody=pendulum, aibar=np.array([0,1,0]), ajbar=np.array([1,0,0]), f=0.0)     # Keeps pendulum from rotation around its own axis
+    DP1mot = DP1(ibody=pendulum, aibar=np.array([1,0,0]), ajbar=np.array([0,0,-1]), f=fDP1)  # Enforces motion
     asy.add_joint(xcon)
     asy.add_joint(ycon)
     asy.add_joint(zcon)
