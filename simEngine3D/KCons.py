@@ -31,7 +31,7 @@ def _get_Bmat(p: np.ndarray, s: np.ndarray) -> np.ndarray:
 
     b1 = (e0I + etil) @ s   # Vector
     b2 = np.outer(e, s) - (e0I + etil) @ tilde(s) # 3x3 matrix
-    Bmat = np.concatenate((b1.reshape(-1,1), b2), axis=1) # 3x4 matrix
+    Bmat = 2 * np.concatenate((b1.reshape(-1,1), b2), axis=1) # 3x4 matrix
     return Bmat
 
 
