@@ -1,0 +1,838 @@
+import numpy as np
+from dataclasses import dataclass
+from typing import Callable, Dict, Optional, Tuple, Union, List
+import matplotlib.pyplot as plt
+import time
+
+def tilde(v: np.ndarray):
+    """
+    Skew-symmetric matrix generator of a vector v
+    """
+    [x,y,z] = v
+    return np.array([[0,-z, y],
+                     [z, 0,-x],
+                     [-y, x, 0]], float)
+
+def _get_Bmat(p: np.ndarray, s: np.ndarray) -> np.ndarray:
+    """
+    Return the 3x4 matrix B(p,s) = d(A(p) s)/dp for Euler parameters p = [e0,e1,e2,e3].
+
+    p (np.ndarray): Euler parameters [e0, e1, e2, e3].
+    s (np.ndarray): A 3-vector in the G-RF frame to be rotated by A(p).
+
+    Returns
+    Bmat : (3,4) ndarray
+    """
+    p = np.asarray(p, dtype=float).reshape(4)
+    s = np.asarray(s, dtype=float).reshape(3)
+    e0 = p[0]
+    e  = p[1:]
+    etil = tilde(e)
+    e0I = e0 * np.eye(3)
+
+    b1 = (e0I + etil) @ s   # Vector
+    b2 = np.outer(e, s) - (e0I + etil) @ tilde(s) # 3x3 matrix
+    Bmat = 2 * np.concatenate((b1.reshape(-1,1), b2), axis=1) # 3x4 matrix
+    return Bmat
+
+def A_to_p(A: np.ndarray):
+
+    # Project A to the nearest element of SO(3) to avoid drift
+    U, S, Vt = np.linalg.svd(A)
+    R = U @ Vt
+    if np.linalg.det(R) < 0.0:  # enforce right-handedness
+        U[:, -1] *= -1
+        R = U @ Vt
+
+    tr = np.trace(R)
+
+    if tr > 0.0:
+        S = np.sqrt(tr + 1.0) * 2.0
+        e0 = 0.25 * S
+        e1 = (R[2,1] - R[1,2]) / S
+        e2 = (R[0,2] - R[2,0]) / S
+        e3 = (R[1,0] - R[0,1]) / S
+    else:
+        if (R[0,0] > R[1,1]) and (R[0,0] > R[2,2]):
+            S = np.sqrt(1.0 + R[0,0] - R[1,1] - R[2,2]) * 2.0
+            e0 = (R[2,1] - R[1,2]) / S
+            e1 = 0.25 * S
+            e2 = (R[0,1] + R[1,0]) / S
+            e3 = (R[0,2] + R[2,0]) / S
+        elif R[1,1] > R[2,2]:
+            S = np.sqrt(1.0 + R[1,1] - R[0,0] - R[2,2]) * 2.0
+            e0 = (R[0,2] - R[2,0]) / S
+            e1 = (R[0,1] + R[1,0]) / S
+            e2 = 0.25 * S
+            e3 = (R[1,2] + R[2,1]) / S
+        else:
+            S = np.sqrt(1.0 + R[2,2] - R[0,0] - R[1,1]) * 2.0
+            e0 = (R[1,0] - R[0,1]) / S
+            e1 = (R[0,2] + R[2,0]) / S
+            e2 = (R[1,2] + R[2,1]) / S
+            e3 = 0.25 * S
+
+    p = np.array([e0, e1, e2, e3], dtype=float)
+    p /= np.linalg.norm(p)
+    if p[0] < 0.0:  # fix overall sign (optional but handy for continuity)
+        p = -p
+    
+    return p
+
+class Orientation:
+    def __init__(self, e0, e1, e2, e3):
+        """
+        e0, e1, e2, e3: Euler parameters
+        """
+        self.e0 = e0
+        self.e1 = e1
+        self.e2 = e2
+        self.e3 = e3
+    
+    @property
+    def p(self):
+        return np.array([self.e0, self.e1, self.e2, self.e3])
+    
+    @property
+    def A(self):
+        [e0, e1, e2, e3] = self.p
+        return 2*np.array([
+                            [e0**2 + e1**2 - 0.5, e1*e2 - e0*e3, e1*e3 + e0*e2],
+                            [e1*e2 + e0*e3, e0**2 + e2**2 - 0.5, e2*e3 - e0*e1],
+                            [e1*e3 - e0*e2, e2*e3 + e0*e1, e0**2 + e3**2 - 0.5]
+                        ], dtype=float)
+    
+    @property
+    def E(self):
+        [e0, e1, e2, e3] = self.p
+        return np.array([
+            [-e1,  e0,  -e3,  e2],
+            [-e2,  e3,   e0, -e1],
+            [-e3, -e2,   e1,  e0]
+        ], dtype=float)
+
+    @property
+    def G(self):
+        [e0, e1, e2, e3] = self.p
+        return np.array([
+            [-e1,  e0,   e3, -e2],
+            [-e2, -e3,   e0,  e1],
+            [-e3,  e2,  -e1,  e0]
+        ], dtype=float)
+    
+    def set_p(self, p_new: np.ndarray):
+        [self.e0, self.e1, self.e2, self.e3] = p_new
+
+@dataclass
+class RigidBody:
+    name: str
+    r: np.ndarray   # (x,y,z) of CG in G-RF
+    ori: Orientation
+    mass: float = None
+    inertia: np.ndarray = None
+    _id: int = None
+    _is_ground: bool = False
+
+    # TODO: Account for markers outside CG
+
+class KCon:
+    def __init__(self, ibody, jbody=None):
+        self.ibody = ibody
+
+        if jbody is None:
+            # jbody is ground
+            # Add dummy part
+            [e0, e1, e2, e3] = A_to_p(np.eye(3))
+            ground_ori = Orientation(e0, e1, e2, e3)
+            ground = RigidBody("Ground", np.zeros(3), ground_ori, _is_ground=True)
+            self.jbody = ground
+        else:
+            self.jbody = jbody
+    
+    def phi(self, q, t):
+        raise NotImplementedError
+    
+    def phi_r(self):
+        raise NotImplementedError
+    
+    def phi_p(self):
+        raise NotImplementedError
+    
+    def phi_q(self):
+        """Return [phi_ri, phi_pi, phi_ri, phi_rj]"""
+        [phi_ri, phi_rj] = self.phi_r()
+        [phi_pi, phi_pj] = self.phi_p()
+        return [phi_ri, phi_pi, phi_rj, phi_pj]
+    
+    def nu(self, t):
+        """
+        L1 RHS: \dot{f}(t) 
+        (same for all base KCons)
+        """
+        if isinstance(self.fdot, Callable):
+            fdott = self.fdot(t)
+        elif isinstance(self.fdot, float):
+            fdott = self.fdot
+        else:
+            print("WARNING: fdot(t) passed to KCon is some unexpected format. Disregarding and setting fdot(t) to 0.0")
+            fdott = 0.0
+
+        return fdott
+
+    def gamma(self):
+        raise NotImplementedError
+    
+    
+class DP1(KCon):
+    def __init__(self,
+                 ibody: RigidBody,
+                 aibar: np.ndarray,
+                 jbody: RigidBody=None,
+                 ajbar: np.ndarray=None,
+                 f: List[Callable]=None,
+                 fdot: List[Callable]=None,
+                 fddot: List[Callable]=None):
+        """
+        ibody (RigidBody): I body
+        aibar (np.ndarray): Vector P -> Q in L-RF1
+        jbody (RigidBody): J body
+        ajbar (np.ndarray): Vector P -> Q in L-RF2
+        f (Callable): Dot product offset, as function of time.
+        fdot (Callable): Time derivative of f, as function of time.
+        fddot (Callable): Second time derivative of f, as function of time.
+        """
+        super().__init__(ibody, jbody)
+        self.aibar = aibar
+        self.ajbar = ajbar
+
+        if f is None:
+            self.f = lambda t: 0.0
+        else:
+            self.f = f
+        
+        if fdot is None:
+            self.fdot = lambda t: 0.0
+        else:
+            self.fdot = fdot
+        
+        if fddot is None:
+            self.fddot = lambda t: 0.0
+        else:
+            self.fddot = fddot
+    
+    def phi(self, t):
+        """
+        ACE: \Phi^{DP1} = \bar{a_i^T} @ A_i^T @ A_j @ \bar{a_j} - f(t) = 0
+        """
+        phi_ = self.aibar.T @ self.ibody.ori.A.T @ self.jbody.ori.A @ self.ajbar
+
+        if isinstance(self.f, Callable):
+            ft = self.f(t)
+        elif isinstance(self.f, float):
+            ft = self.f
+        else:
+            print("WARNING: f(t) passed to DP1 is some unexpected format. Disregarding and setting f(t) to 0.0")
+            ft = 0.0
+        
+        return phi_ - ft
+
+    def phi_r(self):
+        return [np.zeros(3), np.zeros(3)]
+    
+    def phi_p(self):
+        ai = self.ibody.ori.A @ self.aibar
+        aj = self.jbody.ori.A @ self.ajbar
+
+        phi_pi = aj.T @ _get_Bmat(self.ibody.ori.p, self.aibar)
+        phi_pj = ai.T @ _get_Bmat(self.jbody.ori.p, self.ajbar)
+        return [phi_pi, phi_pj]
+
+    def gamma(self, t, pdoti, pdotj):
+        """
+        L2 RHS: \ddot{f}(t) - a_j^T \tilde{\omega_i} \tilde{\omega_i} a_i - a_i^T \tilde{\omega_j} \tilde{\omega_j} a_j -2 (\tilde{\omega_i}a_i) \cdot (\tilde{\omega_j}a_j)
+                where \tilde{\omega} =: \dot{A}A^T 
+        """
+
+        ai = self.ibody.ori.A @ self.aibar
+        aj = self.jbody.ori.A @ self.ajbar
+        witil = tilde(2*self.ibody.ori.E @ pdoti)   # \tilde{\omega_i} = skew(2*E_i @ \dot{p}_i)
+        wjtil = tilde(2*self.jbody.ori.E @ pdotj)   # "   "
+
+        gamma_ = aj.T @ witil @ witil @ ai - ai.T @ wjtil @ wjtil @ aj - 2*(np.dot(witil @ ai, wjtil @ aj))
+
+        if isinstance(self.fddot, Callable):
+            fddott = np.array(7*[self.fddot(t)])
+        elif isinstance(self.fddot, List):
+            fddott = np.array([fii(t) if isinstance(fii, Callable) else 0.0 for fii in self.fddot])
+        else:
+            print("WARNING: fddot(t) passed to DP1 is some unexpected format. Disregarding and setting fddot(t) to 0.0")
+            fddott = np.zeros(7)
+
+        return fddott - gamma_
+
+class DP2(KCon):
+    """Constrains distance projection between a vector on one body (aibar) and a point on another"""
+    def __init__(self,
+                 ibody: RigidBody,
+                 aibar: np.ndarray,
+                 siPbar: np.ndarray,
+                 jbody: RigidBody,
+                 sjQbar: np.ndarray,
+                 f: List[Callable]=None,
+                 fdot: List[Callable]=None,
+                 fddot: List[Callable]=None):
+        """
+        ibody (RigidBody): I body
+        aibar (np.ndarray): Vector P -> Q in L-RFi
+        siPbar (np.ndarray): Location of Point P on ibody in L-RFi
+        jbody (RigidBody): J body
+        sjQbar (np.ndarray): Location of Point Q on jbody in L-RFj
+        f (Callable): Dot product offset, as function of time.
+        fdot (Callable): Time derivative of f, as function of time.
+        fddot (Callable): Second time derivative of f, as function of time.
+        """
+        super().__init__(ibody, jbody)
+        self.aibar = aibar
+        self.siPbar = siPbar
+        self.sjQbar = sjQbar
+
+        if f is None:
+            self.f = lambda t: 0.0
+        else:
+            self.f = f
+        
+        if fdot is None:
+            self.fdot = lambda t: 0.0
+        else:
+            self.fdot = fdot
+        
+        if fddot is None:
+            self.fddot = lambda t: 0.0
+        else:
+            self.fddot = fddot
+    
+    def phi(self, t):
+        """
+        ACE: \Phi^{DP2} = \bar{a_i^T} @ A_i^T @ d_{ij} - f(t) = 0
+                          where d_{ij} = r_j + A_j @ \bar{s_j^Q} - r_i - A_i @ \bar{s_i^P}
+        """
+        dij = self.jbody.r + self.jbody.ori.A @ self.sjQbar - self.ibody.r - self.ibody.ori.A @ self.siPbar
+        phi_ = self.aibar.T @ self.ibody.ori.A.T @ dij
+
+        if isinstance(self.f, Callable):
+            ft = self.f(t)
+        elif isinstance(self.f, float):
+            ft = self.f
+        else:
+            print("WARNING: f(t) passed to DP2 is some unexpected format. Disregarding and setting f(t) to 0.0")
+            ft = 0.0
+        
+        return phi_ - ft
+    
+    def phi_r(self):
+        phi_ri = -self.aibar.T
+        dij = self.jbody.r + self.jbody.ori.A @ self.sjQbar - self.ibody.r - self.ibody.ori.A @ self.siPbar
+        aiT = ( self.ibody.ori.A @ self.aibar ).T
+        phi_ri = -aiT
+        phi_rj = dij.T @ _get_Bmat(self.ibody.ori.p, self.aibar) - aiT @ _get_Bmat(self.ibody.ori.p, self.siPbar)
+        return [phi_ri, phi_rj]
+    
+    def phi_p(self):
+        aiT = ( self.ibody.ori.A @ self.aibar ).T
+        phi_pi = aiT
+        phi_pj = aiT @ _get_Bmat(self.jbody.ori.p, self.sjQbar)
+        return [phi_pi, phi_pj]
+
+    def gamma(self, t, rdoti, rdotj, pdoti, pdotj):
+        """
+        L2 RHS: \ddot{f}(t) - (\tilde{\omega_i} \tilde{\omega_i} a_i) \cdot d - 2 (\tilde{\omega_i} a_i) \cdot (\dot{r_j} - \dot{r_i} + \tilde{\omega_j} s_j - \tilde{\omega_i} s_i) - a_i^T (\tilde{\omega_j}\tilde{\omega_j}s_j \tilde{\omega_i}\tilde{\omega_i}s_i)
+                where d =: (r_j + s_j) - (r_i + s_i)
+        """
+
+        ai = self.ibody.ori.A @ self.aibar
+        si = self.ibody.ori.A @ self.siPbar
+        sj = self.jbody.ori.A @ self.sjQbar
+        d = self.jbody.r + sj - self.ibody.r - si
+        witil = tilde(2*self.ibody.ori.E @ pdoti)   # \tilde{\omega_i} = skew(2*E_i @ \dot{p}_i)
+        wjtil = tilde(2*self.jbody.ori.E @ pdotj)   # "   "
+
+        h1 = wjtil @ wjtil @ sj - witil @ witil @ si    # Intermediate value
+        gamma_ = np.dot(witil @ witil @ ai, d) - 2*np.dot(witil @ ai, rdotj - rdoti + wjtil @ sj - witil @ si) - ai.T @ h1
+
+        if isinstance(self.fddot, Callable):
+            fddott = np.array(7*[self.fddot(t)])
+        elif isinstance(self.fddot, List):
+            fddott = np.array([fii(t) if isinstance(fii, Callable) else 0.0 for fii in self.fddot])
+        else:
+            print("WARNING: fddot(t) passed to DP2 is some unexpected format. Disregarding and setting fddot(t) to 0.0")
+            fddott = np.zeros(7)
+
+        return fddott - gamma_
+
+
+class D(KCon):
+    """Fixes distance between two points"""
+    def __init__(self,
+                 ibody: RigidBody,
+                 siPbar: np.ndarray,
+                 jbody: RigidBody,
+                 sjQbar: np.ndarray,
+                 f: List[Callable]=None,
+                 fdot: List[Callable]=None,
+                 fddot: List[Callable]=None):
+        """
+        ibody (RigidBody): I body
+        siPbar (np.ndarray): Location of Point P on ibody in L-RFi
+        jbody (RigidBody): J body
+        sjQbar (np.ndarray): Location of Point Q on jbody in L-RFj
+        f (Callable): Dot product offset, as function of time.
+        fdot (Callable): Time derivative of f, as function of time.
+        fddot (Callable): Second time derivative of f, as function of time.
+        """
+        super().__init__(ibody, jbody)
+        self.siPbar = siPbar
+        self.sjQbar = sjQbar
+
+        if f is None:
+            self.f = lambda t: 0.0
+        else:
+            self.f = f
+        
+        if fdot is None:
+            self.fdot = lambda t: 0.0
+        else:
+            self.fdot = fdot
+        
+        if fddot is None:
+            self.fddot = lambda t: 0.0
+        else:
+            self.fddot = fddot
+    
+    def phi(self, t):
+        """
+        ACE: \Phi^{D} = d_{ij}^T @ d_{ij} = 0
+                          where d_{ij} = r_j + A_j @ \bar{s_j^Q} - r_i - A_i @ \bar{s_i^P}
+        """
+        dij = self.jbody.r + self.jbody.ori.A @ self.sjQbar - self.ibody.r - self.ibody.ori.A @ self.siPbar
+        phi_ = dij.T @ dij
+
+        if isinstance(self.f, Callable):
+            ft = self.f(t)
+        elif isinstance(self.f, float):
+            ft = self.f
+        else:
+            print("WARNING: f(t) passed to D is some unexpected format. Disregarding and setting f(t) to 0.0")
+            ft = 0.0
+        
+        return phi_ - ft
+    
+    def phi_r(self):
+        dij = self.jbody.r + self.jbody.ori.A @ self.sjQbar - self.ibody.r - self.ibody.ori.A @ self.siPbar
+        phi_rj = 2 * dij.T
+        phi_ri = -phi_rj
+        return [phi_ri, phi_rj]
+
+    def phi_p(self):
+        dij = self.jbody.r + self.jbody.ori.A @ self.sjQbar - self.ibody.r - self.ibody.ori.A @ self.siPbar
+        phi_pi = -2*dij.T @ _get_Bmat(self.ibody.ori.p, self.siPbar)
+        phi_pj = 2*dij.T @ _get_Bmat(self.jbody.ori.p, self.sjQbar)
+        return [phi_pi, phi_pj]
+
+    def gamma(self, t, rdoti, rdotj, pdoti, pdotj):
+        """
+        L2 RHS: \ddot{f}(t) - 2||\dot{d_{ij}}||^2 - 2*d_{ij}^T(\tilde{\omega_j}\tilde{\omega_j}s_j - \tilde{\omega_i}\tilde{\omega_i}s_i)
+                where \dot{d_{ij}} = \dot{r_j} - \dot{r_i} + \tilde{\omega_j}s_j - \tilde{\omega_i}s_i 
+        """
+
+        si = self.ibody.ori.A @ self.siPbar
+        sj = self.jbody.ori.A @ self.sjQbar
+        witil = tilde(2*self.ibody.ori.E @ pdoti)   # \tilde{\omega_i} = skew(2*E_i @ \dot{p}_i)
+        wjtil = tilde(2*self.jbody.ori.E @ pdotj)   # "   "
+        dij = self.jbody.r + sj - self.ibody.r - si
+        dijdot = rdotj - rdoti + wjtil @ sj - witil @ si
+
+        gamma_ = dijdot.T @ dijdot - 2*dij.T @ (wjtil @ wjtil @ sj - witil @ witil @ si)
+        if isinstance(self.fddot, Callable):
+            fddott = np.array(7*[self.fddot(t)])
+        elif isinstance(self.fddot, List):
+            fddott = np.array([fii(t) if isinstance(fii, Callable) else 0.0 for fii in self.fddot])
+        else:
+            print("WARNING: fddot(t) passed to D is some unexpected format. Disregarding and setting fddot(t) to 0.0")
+            fddott = np.zeros(7)
+
+        return fddott - gamma_
+
+
+class CD(KCon):
+    """Coordinate Difference. Directly constrains a coordinate difference between two points"""
+    def __init__(self,
+                 c: np.ndarray,
+                 ibody: RigidBody,
+                 siPbar: np.ndarray,
+                 jbody: RigidBody=None,
+                 sjQbar: np.ndarray=np.zeros(3),
+                 f: List[Callable]=None,
+                 fdot: List[Callable]=None,
+                 fddot: List[Callable]=None):
+        """
+        ibody (RigidBody): I body
+        c (np.ndarray): Vector (in G-RF) along which to apply constraint 
+        siPbar (np.ndarray): Location of Point P on ibody in L-RFi
+        jbody (RigidBody): J body
+        sjQbar (np.ndarray): Location of Point Q on jbody in L-RFj
+        f (Callable): Dot product offset, as function of time.
+        fdot (Callable): Time derivative of f, as function of time.
+        fddot (Callable): Second time derivative of f, as function of time.
+        """
+        super().__init__(ibody, jbody)
+        self.c = c
+        self.siPbar = siPbar
+        self.sjQbar = sjQbar
+
+        if f is None:
+            self.f = lambda t: 0.0
+        else:
+            self.f = f
+        
+        if fdot is None:
+            self.fdot = lambda t: 0.0
+        else:
+            self.fdot = fdot
+        
+        if fddot is None:
+            self.fddot = lambda t: 0.0
+        else:
+            self.fddot = fddot
+    
+    def phi(self, t):
+        """
+        ACE: \Phi^{CD} = c^T @ d_{ij} - f(t) = 0
+                          where d_{ij} = r_j + A_j @ \bar{s_j^Q} - r_i - A_i @ \bar{s_i^P}
+        """
+        dij = self.jbody.r + self.jbody.ori.A @ self.sjQbar - self.ibody.r - self.ibody.ori.A @ self.siPbar
+        phi_ = self.c.T @ dij
+
+        if isinstance(self.f, Callable):
+            ft = self.f(t)
+        elif isinstance(self.f, float):
+            ft = self.f
+        else:
+            print("WARNING: f(t) passed to CD is some unexpected format. Disregarding and setting f(t) to 0.0")
+            ft = 0.0
+        
+        return phi_ - ft
+
+    def phi_r(self):
+        phi_rj = self.c.T
+        phi_ri = -phi_rj
+        return [phi_ri, phi_rj]
+
+    def phi_p(self):
+        phi_pi = -self.c.T @ _get_Bmat(self.ibody.ori.p, self.siPbar)
+        phi_pj = self.c.T @ _get_Bmat(self.jbody.ori.p, self.sjQbar)
+        return [phi_pi, phi_pj]
+
+    def gamma(self, t, pdoti, pdotj):
+        """
+        L2 RHS: \ddot{f}(t) - c^T - (\tilde{\omega_j}\tilde{\omega_j}s_j - \tilde{\omega_i}\tilde{\omega_i}s_i)
+                where \dot{d_{ij}} = \dot{r_j} - \dot{r_i} + \tilde{\omega_j}s_j - \tilde{\omega_i}s_i 
+        """
+
+        si = self.ibody.ori.A @ self.siPbar
+        sj = self.jbody.ori.A @ self.sjQbar
+        witil = tilde(2*self.ibody.ori.E @ pdoti)   # \tilde{\omega_i} = skew(2*E_i @ \dot{p}_i)
+        wjtil = tilde(2*self.jbody.ori.E @ pdotj)   # "   "
+
+        gamma_ = self.c.T @ (wjtil @ wjtil @ sj - witil @ witil @ si)
+        if isinstance(self.fddot, Callable):
+            fddott = np.array(7*[self.fddot(t)])
+        elif isinstance(self.fddot, List):
+            fddott = np.array([fii(t) if isinstance(fii, Callable) else 0.0 for fii in self.fddot])
+        else:
+            print("WARNING: fddot(t) passed to CD is some unexpected format. Disregarding and setting fddot(t) to 0.0")
+            fddott = np.zeros(7)
+
+        return fddott - gamma_
+    
+
+
+class Assembly:
+    def __init__(self):
+        self.bodies: List[RigidBody] = []
+        self.joints: List[KCon] = []    # TODO: Add higher-order joints/constraints
+        self.forces: List = []
+        self.grav = np.array([0.0, 0.0, 0.0])
+
+    def add_body(self, body: RigidBody):
+        body._id = len(self.bodies)
+        self.bodies.append(body)
+
+    def add_joint(self, joint: KCon):
+        self.joints.append(joint)
+
+    def add_grav(self, g: np.ndarray):
+        assert len(g) == 3
+        self.grav = g
+    
+    # TODO: Make `Force` class
+
+    @property
+    def nb(self):
+        return len(self.bodies)
+    
+    @property
+    def nq(self): return 7 * self.nb
+
+    def pack_q(self) -> np.ndarray:
+        q = np.zeros(self.nq)
+        for k,b in enumerate(self.bodies):
+            i = 7*k
+            q[i:i+3] = b.r
+            q[i+3:i+7] = b.p
+        return q
+
+    def unpack_q(self, q: np.ndarray):
+        for k,b in enumerate(self.bodies):
+            i = 7*k
+            b.r = q[i:i+3].copy()
+            b.ori.p = q[i+3:i+7].copy()
+
+    def get_Phi(self, t: float) -> np.ndarray:
+        rows = []
+        for j in self.joints:
+            #for kc in j.joints: # Ignore for now. Each joint has one KCon at this juncture.
+            rows.append(np.atleast_1d(j.phi(t)))
+
+        return np.concatenate(rows).reshape(-1,)
+
+    def get_Phi_q(self, t: float) -> np.ndarray:
+        #m = self.nb + len(self.joints) # TODO: Update for higher-order constraints
+        # For now, 1 ACE per KCon because only using primitives. Second half of above needs to change when >1 ACE per KCon
+        
+        m = len(self.joints)
+        Phi_q = np.zeros((m, self.nq))
+        row = 0
+        for J in self.joints:
+            #for kc in j.joints: # Ignore for now. Each joint has one KCon at this juncture.
+                # each KCon returns [phi_ri, phi_rj, phi_pi, phi_pj]
+            pri, prj = J.phi_r()
+            ppi, ppj = J.phi_p()
+            # place into global Jacobian
+            ii = 7*J.ibody._id
+            Phi_q[row, ii:ii+3] = pri
+            Phi_q[row, ii+3:ii+7] = ppi
+
+            if not J.jbody._is_ground:
+                jj = 7*J.jbody._id
+                Phi_q[row, jj:jj+3] = prj
+                Phi_q[row, jj+3:jj+7] = ppj
+
+            row += 1
+
+        return Phi_q
+
+    def get_nu(self, t: float) -> np.ndarray:
+        rows = []
+        for J in self.joints:
+            for kc in J.joints:
+                rows.append(np.atleast_1d(kc.nu(t)))
+        return np.concatenate(rows).reshape(-1,)
+
+    def gamma(self, t: float, qdot: np.ndarray) -> np.ndarray:
+        # split qdot into per-body (rdot, pdot)
+        rdots, pdots = [], []
+        for k in range(self.nb):
+            i = 7*k
+            rdots.append(qdot[i:i+3])
+            pdots.append(qdot[i+3:i+7])
+        rows = []
+        for J in self.joints:
+            for kc in J.joints:
+                ib = self._body_index[kc.ibody._id]
+                jb = self._body_index[kc.jbody._id]
+                rows.append(np.atleast_1d(kc.gamma(
+                    t,
+                    rdots[ib], rdots[jb],
+                    pdots[ib], pdots[jb]
+                )))
+        return np.concatenate(rows).reshape(-1,)
+
+    def mass_matrix(self) -> np.ndarray:
+        """Block-diagonal translational part; rotational mapping filled later."""
+        M = np.zeros((self.nq, self.nq))
+        for k,b in enumerate(self.bodies):
+            ii = 7*k
+            M[ii:ii+3, ii:ii+3] = b.mass * np.eye(3)
+            # TODO: rotational 4x4 block needs r-p mapping (E/G) per notes; fill later
+
+        return M
+
+    def generalized_forces(self, t: float) -> np.ndarray:
+        # TODO: Add generalized forces for p
+        Q = np.zeros(self.nq)
+        for b in self.bodies:
+            Qr = np.zeros(3)
+            for f in self.forces:
+                Qr += f
+
+            ii = 7*b._id
+            Q[ii:ii+3] += Qr
+            Q[ii:ii+3] += self.grav * b.mass
+            Q[ii+3:ii+7] += np.zeros(0)
+
+        return Q
+
+def run_positionDyn(asy, dt, end_time, newton_max=30, tol=1e-10):
+    def pack_q(asy):
+        q = np.zeros(7*asy.nb)
+        for k,b in enumerate(asy.bodies):
+            i = 7*k
+            q[i:i+3] = b.r
+            q[i+3:i+7] = b.ori.p
+        return q
+    
+    def unpack_q(asy, q):
+        for k,b in enumerate(asy.bodies):
+            i = 7*k
+            b.r = q[i:i+3].copy()
+            p = q[i+3:i+7].copy()
+            p = p/np.linalg.norm(p)
+            b.ori.set_p(p)
+
+    def mass_matrix(asy):
+        nq = 7*asy.nb
+        M = np.zeros((nq,nq))
+        for k,b in enumerate(asy.bodies):
+            i = 7*k
+            M[i:i+3,i:i+3] = b.mass*np.eye(3)
+            A = b.ori.A
+            Jg = A @ b.inertia @ A.T
+            E = b.ori.E
+            M[i+3:i+7, i+3:i+7] = 4.0*E.T @ Jg @ E
+        return M
+    
+    def generalized_forces(asy):
+        nq = 7*asy.nb
+        Q = np.zeros(nq)
+        for k,b in enumerate(asy.bodies):
+            i = 7*k
+            Q[i:i+3] = b.mass*asy.grav
+        return Q
+    
+    def build_Phiq_aug(asy):
+        Phiq_j = asy.get_Phi_q(0.0)
+        nq = 7*asy.nb
+        rows = []
+        for k,b in enumerate(asy.bodies):
+            r = np.zeros(nq)
+            r[7*k+3:7*k+7] = b.ori.p
+            rows.append(r)
+        Pnorm = np.vstack(rows) if rows else np.zeros((0,nq))
+        return Phiq_j, np.vstack([Phiq_j, Pnorm])
+    
+    def torque_from_lam(asy, lam_joint):
+        Phiq_j = asy.get_Phi_q(0.0)
+        Qc = Phiq_j.T @ lam_joint
+        Qp = Qc[3:7]
+        tau = 0.5*asy.bodies[0].ori.E @ Qp
+        return tau
+    
+    qn = pack_q(asy)
+    vn = np.zeros_like(qn)
+    an = np.zeros_like(qn)
+    qnm1 = qn.copy()
+    vnm1 = vn.copy()
+    t = 0.0
+    ts = []
+    r_hist = []
+    w_hist = []
+    tau_hist = []
+    vviol_hist = []
+    t0 = time.perf_counter()
+    step = 0
+    while t < end_time - 1e-15:
+        t = t + dt
+        if step == 0:
+            gamma = 1.0
+            alpha0 = 1.0
+            vstar = vn
+            qstar = qn + dt*vstar
+        else:
+            gamma = 2.0/3.0
+            alpha0 = 4.0/9.0
+            vstar = (4.0*vn - vnm1)/3.0
+            qstar = (4.0*qn - qnm1)/3.0 + (2.0/3.0)*dt*vstar
+        unpack_q(asy, qstar)
+        a = an.copy()
+        lam = np.zeros(asy.get_Phi_q(0.0).shape[0] + asy.nb)
+        for _ in range(newton_max):
+            M = mass_matrix(asy)
+            Q = generalized_forces(asy)
+            Phiq_joint, Phiq_aug = build_Phiq_aug(asy)
+            v = vstar + gamma*dt*a
+            nu_joint = np.zeros(Phiq_joint.shape[0])
+            nu_aug = np.concatenate([nu_joint, np.zeros(asy.nb)])
+            Rdyn = M @ a - Q - Phiq_aug.T @ lam
+            Rkin = Phiq_aug @ v - nu_aug
+            K11 = M
+            K12 = Phiq_aug.T
+            K21 = gamma*dt*Phiq_aug
+            K22 = np.zeros((Phiq_aug.shape[0], Phiq_aug.shape[0]))
+            K = np.block([[K11, K12],[K21, K22]])
+            rhs = -np.concatenate([Rdyn, Rkin])
+            delta, *_ = np.linalg.lstsq(K, rhs, rcond=None)
+            da = delta[:M.shape[0]]
+            dlam = delta[M.shape[0]:]
+            a = a + da
+            lam = lam + dlam
+            if np.linalg.norm(da) < tol:
+                break
+        v = vstar + gamma*dt*a
+        q = qstar + alpha0*(dt**2)*a
+        unpack_q(asy, q)
+        qnm1 = qn; vnm1 = vn
+        qn = q.copy(); vn = v.copy(); an = a.copy()
+        ts.append(t)
+        b0 = asy.bodies[0]
+        r_hist.append(b0.r.copy())
+        w_hist.append(2.0*b0.ori.E @ vn[3:7])
+        lam_joint = lam[:Phiq_joint.shape[0]]
+        tau = torque_from_lam(asy, lam_joint)
+        tau_hist.append(tau[0])
+        vviol_hist.append(np.linalg.norm(Phiq_joint @ v))
+        step += 1
+    sim_time = time.perf_counter() - t0
+    return np.array(ts), np.array(r_hist), np.array(w_hist), np.array(tau_hist), np.array(vviol_hist), sim_time
+
+if __name__ == "__main__":
+    L = 2.0
+    theta0 = 0.5*np.pi
+    rpen = np.array([0.0, L*np.sin(theta0), -L*np.cos(theta0)])
+    f = rpen/np.linalg.norm(rpen)
+    h = np.array([1.0,0.0,0.0])
+    g = np.cross(f,h); g = g/np.linalg.norm(g)
+    A = np.zeros((3,3)); A[:,0]=f; A[:,1]=g; A[:,2]=h
+    [e0,e1,e2,e3] = A_to_p(A)
+    ori = Orientation(e0,e1,e2,e3)
+    pendulum = RigidBody("Pendulum", rpen, ori)
+    pendulum.mass = 2.0
+    pendulum.inertia = np.diag([0.01, 0.06, 0.06])
+    asy = Assembly()
+    asy.add_body(pendulum)
+    Qbar = np.array([-L,0.0,0.0])
+    xcon = CD(np.array([1.0,0.0,0.0]), pendulum, Qbar)
+    ycon = CD(np.array([0.0,1.0,0.0]), pendulum, Qbar)
+    zcon = CD(np.array([0.0,0.0,1.0]), pendulum, Qbar)
+    DP1a = DP1(ibody=pendulum, aibar=np.array([1.0,0.0,0.0]), ajbar=np.array([1.0,0.0,0.0]), f=0.0)
+    DP1b = DP1(ibody=pendulum, aibar=np.array([0.0,1.0,0.0]), ajbar=np.array([1.0,0.0,0.0]), f=0.0)
+    asy.add_joint(xcon); asy.add_joint(ycon); asy.add_joint(zcon); asy.add_joint(DP1a); asy.add_joint(DP1b)
+    asy.add_grav(np.array([0.0,0.0,-9.81]))
+    dt = 0.001
+    end_time = 10.0
+    t,r_hist,w_hist,tau_hist,vviol_hist,sim_time = run_positionDyn(asy, dt, end_time)
+    fig1 = plt.figure(); plt.plot(t, tau_hist); plt.grid(); plt.xlabel("t"); plt.ylabel("torque about x")
+    fig2 = plt.figure(); plt.plot(t, r_hist[:,0], label="x"); plt.plot(t, r_hist[:,1], label="y"); plt.plot(t, r_hist[:,2], label="z"); plt.legend(); plt.grid(); plt.xlabel("t"); plt.ylabel("O' in G")
+    fig3 = plt.figure(); plt.plot(t, w_hist[:,0], label="wx"); plt.plot(t, w_hist[:,1], label="wy"); plt.plot(t, w_hist[:,2], label="wz"); plt.legend(); plt.grid(); plt.xlabel("t"); plt.ylabel("omega in G")
+    fig4 = plt.figure(); plt.plot(t, vviol_hist); plt.grid(); plt.xlabel("t"); plt.ylabel("||Phi_q v||_2")
+    print(sim_time)
+    plt.show()
