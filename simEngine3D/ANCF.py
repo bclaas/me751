@@ -72,10 +72,22 @@ class B324(Element):
         # TODO
         pass
 
-    def H(self, u, v, w, q_e):
-        # TODO
-        pass
-    
+    def H(self, u, v, w):
+        """Jacobian of Shape Function"""
+        rtn = np.zeros((8,3))
+        rtn[0,0] = -3/(2*self.length) + (6*u**2)/(self.length**3)
+        rtn[1,0] = -0.25 - u/self.length + (3*u**2)/(self.length**2)
+        rtn[2,0] = -v / self.length
+        rtn[2,1] = (0.5*self.length - u) / self.length
+        rtn[3,0] = -w / self.length
+        rtn[3,2] = (0.5*self.length - u) / self.length
+        rtn[4,0] = 3/(2*self.length) - (6*u**2)/(self.length**3)
+        rtn[5,0] = -0.25 + u/self.length + (3*u**2)/(self.length**2)
+        rtn[6,0] = v / self.length
+        rtn[6,1] = (0.5*self.length + u) / self.length
+        rtn[7,0] = w / self.length
+        rtn[7,2] = (0.5*self.length + u) / self.length
+        return rtn
 
 class ANCFBody:
     def __init__(self, name: str, r: np.ndarray, ori: Orientation):
