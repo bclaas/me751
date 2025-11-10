@@ -2,25 +2,27 @@ import importlib
 
 __all__ = [
     # classes
-    "Assembly", "RigidBody", "Orientation", "KCon", "DP1", "DP2", "D", "CD",
+    "Assembly", "RigidBody", "Orientation", "KCon", "DP1", "DP2", "D", "CD", "Link"
     # functions
-    "vec2quat", "tilde", "A_to_p",
+    "vec2quat", "tilde", "A_to_p", "write_results"
 ]
 
 _exports = {
     # classes
-    "Assembly":    ("simEngine3D.Assembly",    "Assembly"),
-    "RigidBody":   ("simEngine3D.Bodies",      "RigidBody"),
-    "Orientation": ("simEngine3D.Orientation", "Orientation"),
-    "KCon":        ("simEngine3D.KCons",       "KCon"),
-    "DP1":         ("simEngine3D.KCons",       "DP1"),
-    "DP2":         ("simEngine3D.KCons",       "DP2"),
-    "D":           ("simEngine3D.KCons",       "D"),
-    "CD":          ("simEngine3D.KCons",       "CD"),
+    "Assembly":      ("simEngine3D.Assembly",    "Assembly"),
+    "RigidBody":     ("simEngine3D.Bodies",      "RigidBody"),
+    "Orientation":   ("simEngine3D.Orientation", "Orientation"),
+    "KCon":          ("simEngine3D.KCons",       "KCon"),
+    "DP1":           ("simEngine3D.KCons",       "DP1"),
+    "DP2":           ("simEngine3D.KCons",       "DP2"),
+    "D":             ("simEngine3D.KCons",       "D"),
+    "CD":            ("simEngine3D.KCons",       "CD"),
+    "Link":          ("simEngine3D.Geometry",    "Link"),
     # functions
-    "vec2quat":    ("simEngine3D.Orientation", "vec2quat"),
-    "tilde":       ("simEngine3D.Orientation", "tilde"),
-    "A_to_p":      ("simEngine3D.Orientation", "A_to_p"),
+    "vec2quat":      ("simEngine3D.Orientation", "vec2quat"),
+    "tilde":         ("simEngine3D.Orientation", "tilde"),
+    "A_to_p":        ("simEngine3D.Orientation", "A_to_p"),
+    "write_results": ("simEngine3D.Post",        "write_results"),
 }
 
 def __getattr__(name):

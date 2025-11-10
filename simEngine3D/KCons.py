@@ -49,6 +49,10 @@ class KCon:
             self.jbody = ground
         else:
             self.jbody = jbody
+
+        self._f_warning_suppress = False
+        self._fdot_warning_suppress = False
+        self._fddot_warning_suppress = False
     
     def phi(self, q, t):
         raise NotImplementedError
@@ -148,12 +152,13 @@ class DP1(KCon):
         phi_pj = aj.T @ _get_Bmat(self.jbody.ori.p, self.ajbar)
         return [phi_pi, phi_pj]
 
-    def gamma(self, t, pdoti, pdotj):
+    def gamma(self, t):
         """
         L2 RHS: \ddot{f}(t) - a_j^T \tilde{\omega_i} \tilde{\omega_i} a_i - a_i^T \tilde{\omega_j} \tilde{\omega_j} a_j -2 (\tilde{\omega_i}a_i) \cdot (\tilde{\omega_j}a_j)
                 where \tilde{\omega} =: \dot{A}A^T 
         """
-
+        pdoti = self.ibody._pdot
+        pdotj = self.jbody._pdot
         ai = self.ibody.ori.A @ self.aibar
         aj = self.jbody.ori.A @ self.ajbar
         witil = tilde(2*self.ibody.ori.E @ pdoti)   # \tilde{\omega_i} = skew(2*E_i @ \dot{p}_i)
@@ -162,14 +167,17 @@ class DP1(KCon):
         gamma_ = aj.T @ witil @ witil @ ai - ai.T @ wjtil @ wjtil @ aj - 2*(np.dot(witil @ ai, wjtil @ aj))
 
         if isinstance(self.fddot, Callable):
-            fddott = np.array(7*[self.fddot(t)])
-        elif isinstance(self.fddot, List):
-            fddott = np.array([fii(t) if isinstance(fii, Callable) else 0.0 for fii in self.fddot])
+            fddott = self.fddot(t)
+        elif isinstance(self.fddot, float) or isinstance(self.fddot, int):
+            fddott = self.fddot
         else:
-            print("WARNING: fddot(t) passed to DP1 is some unexpected format. Disregarding and setting fddot(t) to 0.0")
-            fddott = np.zeros(7)
+            if not self._fddot_warning_suppress:
+                print("WARNING: fddot(t) passed to DP1 is some unexpected format. Disregarding and setting fddot(t) to 0.0")
+                self._fddot_warning_suppress = True
 
-        return fddott - gamma_
+            fddott = 0.0
+
+        return gamma_ + fddott
 
 class DP2(KCon):
     """Constrains distance projection between a vector on one body (aibar) and a point on another"""
@@ -244,11 +252,15 @@ class DP2(KCon):
         phi_pj = aiT @ _get_Bmat(self.jbody.ori.p, self.sjQbar)
         return [phi_pi, phi_pj]
 
-    def gamma(self, t, rdoti, rdotj, pdoti, pdotj):
+    def gamma(self, t):
         """
         L2 RHS: \ddot{f}(t) - (\tilde{\omega_i} \tilde{\omega_i} a_i) \cdot d - 2 (\tilde{\omega_i} a_i) \cdot (\dot{r_j} - \dot{r_i} + \tilde{\omega_j} s_j - \tilde{\omega_i} s_i) - a_i^T (\tilde{\omega_j}\tilde{\omega_j}s_j \tilde{\omega_i}\tilde{\omega_i}s_i)
                 where d =: (r_j + s_j) - (r_i + s_i)
         """
+        rdoti = self.ibody._rdot
+        rdotj = self.jbody._rdot
+        pdoti = self.ibody._pdot
+        pdotj = self.jbody._pdot
 
         ai = self.ibody.ori.A @ self.aibar
         si = self.ibody.ori.A @ self.siPbar
@@ -261,12 +273,15 @@ class DP2(KCon):
         gamma_ = np.dot(witil @ witil @ ai, d) - 2*np.dot(witil @ ai, rdotj - rdoti + wjtil @ sj - witil @ si) - ai.T @ h1
 
         if isinstance(self.fddot, Callable):
-            fddott = np.array(7*[self.fddot(t)])
-        elif isinstance(self.fddot, List):
-            fddott = np.array([fii(t) if isinstance(fii, Callable) else 0.0 for fii in self.fddot])
+            fddott = self.fddot(t)
+        elif isinstance(self.fddot, float) or isinstance(self.fddot, int):
+            fddott = self.fddot
         else:
-            print("WARNING: fddot(t) passed to DP2 is some unexpected format. Disregarding and setting fddot(t) to 0.0")
-            fddott = np.zeros(7)
+            if not self._fddot_warning_suppress:
+                print("WARNING: fddot(t) passed to DP2 is some unexpected format. Disregarding and setting fddot(t) to 0.0")
+                self._fddot_warning_suppress = True
+                
+            fddott = 0.0
 
         return fddott - gamma_
 
@@ -339,12 +354,15 @@ class D(KCon):
         phi_pj = 2*dij.T @ _get_Bmat(self.jbody.ori.p, self.sjQbar)
         return [phi_pi, phi_pj]
 
-    def gamma(self, t, rdoti, rdotj, pdoti, pdotj):
+    def gamma(self, t):
         """
         L2 RHS: \ddot{f}(t) - 2||\dot{d_{ij}}||^2 - 2*d_{ij}^T(\tilde{\omega_j}\tilde{\omega_j}s_j - \tilde{\omega_i}\tilde{\omega_i}s_i)
                 where \dot{d_{ij}} = \dot{r_j} - \dot{r_i} + \tilde{\omega_j}s_j - \tilde{\omega_i}s_i 
         """
-
+        rdoti = self.ibody._rdot
+        rdotj = self.jbody._rdot
+        pdoti = self.ibody._pdot
+        pdotj = self.jbody._pdot
         si = self.ibody.ori.A @ self.siPbar
         sj = self.jbody.ori.A @ self.sjQbar
         witil = tilde(2*self.ibody.ori.E @ pdoti)   # \tilde{\omega_i} = skew(2*E_i @ \dot{p}_i)
@@ -352,14 +370,18 @@ class D(KCon):
         dij = self.jbody.r + sj - self.ibody.r - si
         dijdot = rdotj - rdoti + wjtil @ sj - witil @ si
 
-        gamma_ = dijdot.T @ dijdot - 2*dij.T @ (wjtil @ wjtil @ sj - witil @ witil @ si)
+        gamma_ = 2 * dijdot.T @ dijdot - 2*dij.T @ (wjtil @ wjtil @ sj - witil @ witil @ si)
+
         if isinstance(self.fddot, Callable):
-            fddott = np.array(7*[self.fddot(t)])
-        elif isinstance(self.fddot, List):
-            fddott = np.array([fii(t) if isinstance(fii, Callable) else 0.0 for fii in self.fddot])
+            fddott = self.fddot(t)
+        elif isinstance(self.fddot, float) or isinstance(self.fddot, int):
+            fddott = self.fddot
         else:
-            print("WARNING: fddot(t) passed to D is some unexpected format. Disregarding and setting fddot(t) to 0.0")
-            fddott = np.zeros(7)
+            if not self._fddot_warning_suppress:
+                print("WARNING: fddot(t) passed to D is some unexpected format. Disregarding and setting fddot(t) to 0.0")
+                self._fddot_warning_suppress = True
+                
+            fddott = 0.0
 
         return fddott - gamma_
 
@@ -418,7 +440,7 @@ class CD(KCon):
         elif isinstance(self.f, float):
             ft = self.f
         else:
-            print("WARNING: f(t) passed to CD is some unexpected format. Disregarding and setting f(t) to 0.0")
+            # print("WARNING: f(t) passed to CD is some unexpected format. Disregarding and setting f(t) to 0.0")
             ft = 0.0
         
         return phi_ - ft
@@ -433,11 +455,13 @@ class CD(KCon):
         phi_pj = self.c.T @ _get_Bmat(self.jbody.ori.p, self.sjQbar)
         return [phi_pi, phi_pj]
 
-    def gamma(self, t, pdoti, pdotj):
+    def gamma(self, t):
         """
         L2 RHS: \ddot{f}(t) - c^T - (\tilde{\omega_j}\tilde{\omega_j}s_j - \tilde{\omega_i}\tilde{\omega_i}s_i)
                 where \dot{d_{ij}} = \dot{r_j} - \dot{r_i} + \tilde{\omega_j}s_j - \tilde{\omega_i}s_i 
         """
+        pdoti = self.ibody._pdot
+        pdotj = self.jbody._pdot
 
         si = self.ibody.ori.A @ self.siPbar
         sj = self.jbody.ori.A @ self.sjQbar
@@ -445,13 +469,17 @@ class CD(KCon):
         wjtil = tilde(2*self.jbody.ori.E @ pdotj)   # "   "
 
         gamma_ = self.c.T @ (wjtil @ wjtil @ sj - witil @ witil @ si)
+
         if isinstance(self.fddot, Callable):
-            fddott = np.array(7*[self.fddot(t)])
-        elif isinstance(self.fddot, List):
-            fddott = np.array([fii(t) if isinstance(fii, Callable) else 0.0 for fii in self.fddot])
+            fddott = self.fddot(t)
+        elif isinstance(self.fddot, float) or isinstance(self.fddot, int):
+            fddott = self.fddot
         else:
-            print("WARNING: fddot(t) passed to CD is some unexpected format. Disregarding and setting fddot(t) to 0.0")
-            fddott = np.zeros(7)
+            if not self._fddot_warning_suppress:
+                print("WARNING: fddot(t) passed to CD is some unexpected format. Disregarding and setting fddot(t) to 0.0")
+                self._fddot_warning_suppress = True
+                
+            fddott = 0.0
 
         return fddott - gamma_
     

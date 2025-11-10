@@ -5,7 +5,6 @@ import h5py
 import xml.etree.ElementTree as ET
 from scipy.spatial.transform import Rotation
 
-
 def _cell_type_from_connectivity(conn: np.ndarray, coors: np.ndarray) -> tuple[str, int]:
     """
     Infer XDMF TopologyType and nodes-per-cell.
@@ -31,7 +30,6 @@ def _cell_type_from_connectivity(conn: np.ndarray, coors: np.ndarray) -> tuple[s
         return "Tetrahedron", 4
     raise ValueError(f"Unsupported connectivity with {k} nodes per element; expected 3,4, or 8.")
 
-# ---------- core writer ----------
 
 def write_results(results: dict, out_path: str | Path):
     """
@@ -45,7 +43,7 @@ def write_results(results: dict, out_path: str | Path):
         - for each body name:
           results[body]["Geometry"]["Connectivity"] : (Nc, k) int array (0-based indices)
           results[body]["Geometry"]["Coors"]        : (Np, 3) float array (node coords w.r.t. CG)
-          results[body]["Geometry"]["CG"]           : (3,) float array (initial CG in global)
+          results[body]["Geometry"]["Datum"]           : (3,) float array (initial CG in global)
           results[body]["Results"]                  : list of length T, each q := [dx,dy,dz, e0,e1,e2,e3]
     out_path : str | Path
         Target .xdmf file. The .h5 will be placed alongside unless h5_path is given.
@@ -67,8 +65,8 @@ def write_results(results: dict, out_path: str | Path):
             g = results[body]["Geometry"]
             conn = np.asarray(g["Connectivity"], dtype=np.int32)
             pts_local = np.asarray(g["Coors"], dtype=np.float64)
-            cg0 = np.asarray(g["CG"], dtype=np.float64).ravel()
-            if pts_local.shape[1] != 3 or cg0.size != 3:
+            datum = np.asarray(g["Datum"], dtype=np.float64).ravel()  # Geometry's initial CG in G-RF 
+            if pts_local.shape[1] != 3 or datum.size != 3:
                 raise ValueError(f"{body}: expect 3D coordinates")
 
             topo_type, k = _cell_type_from_connectivity(conn, pts_local)
@@ -91,15 +89,20 @@ def write_results(results: dict, out_path: str | Path):
                 if q.size != 7:
                     raise ValueError(f"{body}: each q must have 7 entries [dx,dy,dz,q0,q1,q2,q3]")
                 dr = q[:3]
-                quat = q[3:]
+                [e0, e1, e2, e3] = q[3:]
+                # Re-order per SciPy convention
+                quat = [e1, e2, e3, e0]
+                quat = quat / np.linalg.norm(quat)
                 R = Rotation.from_quat(quat).as_matrix()
-                pts_t = pts_local @ R.T  # rotate local -> global frame
-                pts_t += (cg0 + dr)      # translate CG_0 + delta r(t)
+                #pts_t = pts_local @ R.T  # rotate local -> global frame
+                pts_t = np.array([(R @ (datum + ploc)) + dr for ploc in pts_local])
+                #pts_t += (datum + dr)      # translate datum + delta r(t)
 
-                #dset = grp_pts.create_dataset(
-                #    f"t{ti:05d}", data=pts_t.astype(np.float64),
-                #    compression="gzip"
-                #)
+                # Keep
+                dset = grp_pts.create_dataset(
+                    f"t{ti:05d}", data=pts_t.astype(np.float64),
+                    compression="gzip"
+                )
 
             meta[body] = dict(
                 topo_type=topo_type,
@@ -188,7 +191,7 @@ if __name__ == "__main__":
             "Geometry": {
                 "Connectivity": cells,
                 "Coors": points,
-                "CG": np.array([0,0,0])
+                "Datum": np.array([0,0,0])
             },
             "Results": qs
         }
