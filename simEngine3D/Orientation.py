@@ -108,4 +108,4 @@ class Orientation:
         ], dtype=float)
     
     def set_p(self, p_new: np.ndarray):
-        [self.e0, self.e1, self.e2, self.e3] = p_new
+        [self.e0, self.e1, self.e2, self.e3] = p_new / np.linalg.norm(p_new)

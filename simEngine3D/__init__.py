@@ -4,7 +4,7 @@ __all__ = [
     # classes
     "Assembly", "RigidBody", "Orientation", "KCon", "DP1", "DP2", "D", "CD", "Link"
     # functions
-    "vec2quat", "tilde", "A_to_p", "write_results"
+    "vec2quat", "tilde", "A_to_p", "write_xdmf", "write_xlsx"
 ]
 
 _exports = {
@@ -22,7 +22,8 @@ _exports = {
     "vec2quat":      ("simEngine3D.Orientation", "vec2quat"),
     "tilde":         ("simEngine3D.Orientation", "tilde"),
     "A_to_p":        ("simEngine3D.Orientation", "A_to_p"),
-    "write_results": ("simEngine3D.Post",        "write_results"),
+    "write_xdmf":    ("simEngine3D.Post",        "write_xdmf"),
+    "write_xlsx":    ("simEngine3D.Post",        "write_xlsx"),
 }
 
 def __getattr__(name):

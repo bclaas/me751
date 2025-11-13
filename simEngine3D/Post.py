@@ -1,6 +1,7 @@
 from __future__ import annotations
 from pathlib import Path
 import numpy as np
+import pandas as pd
 import h5py
 import xml.etree.ElementTree as ET
 from scipy.spatial.transform import Rotation
@@ -30,8 +31,30 @@ def _cell_type_from_connectivity(conn: np.ndarray, coors: np.ndarray) -> tuple[s
         return "Tetrahedron", 4
     raise ValueError(f"Unsupported connectivity with {k} nodes per element; expected 3,4, or 8.")
 
+def write_xlsx(results : dict, out_path: str | Path):
+    out_path = Path(out_path).with_suffix(".xlsx")
+    
+    header = ["Time"]
+    body_names = [k for k,_ in results.items() if k!="time"]
+    for k in body_names: header += [f"{k} x", f"{k} y", f"{k} z", f"{k} e0", f"{k} e1", f"{k} e2", f"{k} e3"]
+    
+    assert len(results["time"]) == len(results[body_names[0]]["Results"])
 
-def write_results(results: dict, out_path: str | Path):
+    data = []
+    for ii in range(len(results["time"])):
+        row = []
+        row.append(results["time"][ii])
+        for body_name in body_names:
+            for foo in results[body_name]["Results"][ii]:   # Lazy. oh well.
+                row.append(foo)
+        
+        data.append(row)
+    
+    df = pd.DataFrame(data=data, columns=header)
+    df.set_index("Time", inplace=True)
+    df.to_excel(out_path)
+
+def write_xdmf(results: dict, out_path: str | Path):
     """
     Convert a rigid-body multi-body result into XDMF v3 + HDF5.
 

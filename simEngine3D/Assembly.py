@@ -96,22 +96,12 @@ class Assembly:
         return np.concatenate(rows).reshape(-1,)
 
     def gamma(self, t: float, qdot: np.ndarray) -> np.ndarray:
-        # split qdot into per-body (rdot, pdot)
-        rdots, pdots = [], []
-        for k in range(self.nb):
-            i = 7*k
-            rdots.append(qdot[i:i+3])
-            pdots.append(qdot[i+3:i+7])
+        """split qdot into per-body (rdot, pdot)"""
+        # Assumes pdot and rdot already set for body
         rows = []
-        for J in self.joints:
-            for kc in J.joints:
-                ib = self._body_index[kc.ibody._id]
-                jb = self._body_index[kc.jbody._id]
-                rows.append(np.atleast_1d(kc.gamma(
-                    t,
-                    rdots[ib], rdots[jb],
-                    pdots[ib], pdots[jb]
-                )))
+        for kc in self.joints:
+            rows.append(np.atleast_1d(kc.gamma(t)))
+
         return np.concatenate(rows).reshape(-1,)
 
     def mass_matrix(self) -> np.ndarray:

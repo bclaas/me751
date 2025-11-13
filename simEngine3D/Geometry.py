@@ -43,10 +43,9 @@ class Link:
         coors, self.conn = meshzoo.tube(length=L, radius=radius, n=n)
         coors[:,2] += L/2   # tube axis now extends from (0,0,0) to (0,0,L)...
 
-        rot = rot_a_to_b(d, np.array([0,0,L]))
+        rot = rot_a_to_b(np.array([L,0,0]), np.array([0,0,L]))
         for ii in range(len(coors)):
-            #coors[ii,:] = rot @ coors[ii,:] + p1
-            coors[ii,:] = rot @ coors[ii,:]
+            coors[ii,:] = rot @ coors[ii,:] - np.array([L/2, 0, 0])
 
         # test_point = np.array([0,0,L])
         # t2 = rot @ test_point + p1
