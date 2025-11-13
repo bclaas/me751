@@ -37,8 +37,9 @@ def _get_Bmat(p: np.ndarray, s: np.ndarray) -> np.ndarray:
 
 
 class KCon:
-    def __init__(self, ibody, jbody=None):
+    def __init__(self, ibody, jbody=None, name=None):
         self.ibody = ibody
+        self.name = name
 
         if jbody is None:
             # jbody is ground
@@ -96,7 +97,8 @@ class DP1(KCon):
                  ajbar: np.ndarray=None,
                  f: List[Callable]=None,
                  fdot: List[Callable]=None,
-                 fddot: List[Callable]=None):
+                 fddot: List[Callable]=None,
+                 name: str=None):
         """
         ibody (RigidBody): I body
         aibar (np.ndarray): Vector P -> Q in L-RF1
@@ -106,7 +108,7 @@ class DP1(KCon):
         fdot (Callable): Time derivative of f, as function of time.
         fddot (Callable): Second time derivative of f, as function of time.
         """
-        super().__init__(ibody, jbody)
+        super().__init__(ibody, jbody, name=name)
         self.aibar = aibar
         self.ajbar = ajbar
 
@@ -189,7 +191,8 @@ class DP2(KCon):
                  sjQbar: np.ndarray,
                  f: List[Callable]=None,
                  fdot: List[Callable]=None,
-                 fddot: List[Callable]=None):
+                 fddot: List[Callable]=None,
+                 name: str=None):
         """
         ibody (RigidBody): I body
         aibar (np.ndarray): Vector P -> Q in L-RFi
@@ -200,7 +203,7 @@ class DP2(KCon):
         fdot (Callable): Time derivative of f, as function of time.
         fddot (Callable): Second time derivative of f, as function of time.
         """
-        super().__init__(ibody, jbody)
+        super().__init__(ibody, jbody, name=name)
         self.aibar = aibar
         self.siPbar = siPbar
         self.sjQbar = sjQbar
@@ -295,7 +298,8 @@ class D(KCon):
                  sjQbar: np.ndarray,
                  f: List[Callable]=None,
                  fdot: List[Callable]=None,
-                 fddot: List[Callable]=None):
+                 fddot: List[Callable]=None,
+                 name: str=None):
         """
         ibody (RigidBody): I body
         siPbar (np.ndarray): Location of Point P on ibody in L-RFi
@@ -305,7 +309,7 @@ class D(KCon):
         fdot (Callable): Time derivative of f, as function of time.
         fddot (Callable): Second time derivative of f, as function of time.
         """
-        super().__init__(ibody, jbody)
+        super().__init__(ibody, jbody, name=name)
         self.siPbar = siPbar
         self.sjQbar = sjQbar
 
@@ -396,7 +400,8 @@ class CD(KCon):
                  sjQbar: np.ndarray=np.zeros(3),
                  f: List[Callable]=None,
                  fdot: List[Callable]=None,
-                 fddot: List[Callable]=None):
+                 fddot: List[Callable]=None,
+                 name: str=None):
         """
         ibody (RigidBody): I body
         c (np.ndarray): Vector (in G-RF) along which to apply constraint 
@@ -407,7 +412,7 @@ class CD(KCon):
         fdot (Callable): Time derivative of f, as function of time.
         fddot (Callable): Second time derivative of f, as function of time.
         """
-        super().__init__(ibody, jbody)
+        super().__init__(ibody, jbody, name=name)
         self.c = c
         self.siPbar = siPbar
         self.sjQbar = sjQbar

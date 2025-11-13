@@ -57,9 +57,10 @@ class Assembly:
         rows = []
         for J in self.joints:
             # TODO: Account for joints with >1 ACE
-            rows.append(np.atleast_1d(J.phi(t)))
+            phij = J.phi(t)
+            rows.append((phij))
 
-        return np.concatenate(rows).reshape(-1,)
+        return np.array(rows)
 
     def get_Phi_q(self) -> np.ndarray:
         # For now, 1 ACE per KCon because only using primitives. Second half of above needs to change when >1 ACE per KCon

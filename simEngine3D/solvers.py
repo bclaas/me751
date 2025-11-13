@@ -1,5 +1,6 @@
 import time
 import numpy as np
+from copy import deepcopy
 from scipy.linalg import solve, LinAlgError
 from .Assembly import Assembly
 from .Bodies import RigidBody
@@ -101,9 +102,9 @@ def run_dynamics(asy, dt, end_time, write_increment=1, max_inner_its=10):
         Phi_aug = np.zeros((asy.nb+asy.nc, 7*asy.nb))
         Phi_aug[0:asy.nb, mend:jpend] = asy.p_matrix()
         Phi_q = asy.get_Phi_q()
-        Phi_aug[asy.nb::] = Phi_q
-        A[jpend::, 0:jpend] = Phi_aug
-        A[0:jpend, jpend::] = Phi_aug.T
+        Phi_aug[asy.nb:] = Phi_q
+        A[jpend:, 0:jpend] = Phi_aug
+        A[0:jpend, jpend:] = Phi_aug.T
 
         # Update vector b
         # Add generalized forces
@@ -128,150 +129,89 @@ def run_dynamics(asy, dt, end_time, write_increment=1, max_inner_its=10):
         
         return x
 
+    q_results = []
+    times = []
+
     qn = asy.pack_q()
     vn = np.zeros_like(qn)  # Or some specified IC  
-    qdotdot = np.zeros_like(qn)
-    qnm1 = qn.copy()                # Or some specified IC
-    vnm1 = vn.copy()                # Or some specified IC
-    qnm2 = None
-    vnm2 = None
+    an = np.zeros_like(qn)  # Or some specific IC
+
+    qnm1 = deepcopy(qn)
+    qnm2 = deepcopy(qn)
+    vnm1 = deepcopy(vn)
+    vnm2 = deepcopy(vn)
+
     t = 0.0
-    
-    times = []
-    q_results = []
-    #r_hist = []
-    #w_hist = []
-    #tau_hist = []
-    #vviol_hist = []
+    xn = np.zeros(8*asy.nb + asy.nc)    # TODO: Link this with an
 
-    energy0, _, _ = asy.get_energy()
-
-    step_num = 0
-    alpha = 1.0     # changes to 2/3 after first time step
-
-    # results = {bdy.name: {"Results": []} for bdy in asy.bodies}
-    # results["time"] = []
-
-    solver_start = time.perf_counter()
-    while t < end_time - 1e-15:
+    while t < end_time:
         t = t + dt
-
-        cv = (4/3)*vnm1 - (1/3)*vnm2 if vnm2 is not None else vnm1
-        cr = (4/3)*qnm1 - (1/3)*qnm2 if qnm2 is not None else qnm1
-        cq = cr + alpha*dt*cv
+        print(f"------------------- Time = {t} -------------------")
 
         # Newton Loop
-        qk = qnm1
-        vk = vnm1
-
-        # Initial approximation of acceleration
-        A0, b = update_matrix_eq(asy, t, qk, vk)
-        x = solveAxb(A0,b)
-        qdotdot = x[0:asy.nq]
-        #lam = x[asy.nq:]
-        g = np.inf
+        ak = an
+        xk = xn
         for k in range(max_inner_its):
+            # Stage 1: Compute position and velocity using BDF and most recent acceleration
+            #if k > 1:
+            #    beta0 = 2/3
+            #    qstar = 1.33333*qnm1 - 0.33333*qnm2
+            #    vstar = 1.33333*vnm1 - 0.33333*vnm2
+            #else:
+            beta0 = 1
+            qstar = qnm1
+            vstar = vnm1
 
-            # Adjust displacement and velocity per acceleration
-            vk = cv + qdotdot*alpha*dt
-            qk = cq + qdotdot*((alpha*dt)**2)
+            qk = qstar + ak*((beta0*dt)**2)
+            vk = vstar + ak*beta0*dt
 
-            # Direct solve
-            A, b = update_matrix_eq(asy, t, qk, vk)
-            xprev = x
-            x = solveAxb(A,b)
-            qdotdot = x[0:asy.nq]
-            #lam = x[asy.nq::]
-            crit_res = np.linalg.norm(x-xprev)
-            if crit_res < 1e-6:
+            # Stage 2: Compute residual of NL system
+            A, b = update_matrix_eq(asy, t, qk, vk)     # Updates q and \dot{q} for all bodies, updates EOM & KCon phi values
+            gk = A @ xk - b     # Residual
+            
+            # Stage 3: Solve linear system to get correction
+            correction = solveAxb(A, -gk)
+
+            # Stage 4: Improve quality of approximated solution
+            xk = xk + correction
+            aprev = ak
+            ak = xk[0:asy.nq]
+
+            # Logging
+            delta_norm = np.linalg.norm(ak - aprev)
+            gk_norm = np.linalg.norm(gk)
+            correction_norm = np.linalg.norm(correction)
+            print(f"Step {k}:")
+            print(f"\t|Delta| = {delta_norm}")
+            print(f"\t|gk| = {gk_norm}")
+            print(f"\t|correction| = {correction_norm}")
+
+            # Early break if converged
+            res_norms = np.array([delta_norm, gk_norm, correction_norm])
+            if np.all(res_norms < 1e-6):
+                print(f"\tTerminating Newton Loop")
                 break
 
-            # Iterative Solve
-            residual = A0 @ x - b
-            correction = solveAxb(A0,-residual)
-            x_try = x + correction
-
-            # trial update → residual check (with RHS at trial state)
-            qddot_try = x_try[:asy.nq]
-            vk_try = cv + alpha*dt*qddot_try
-            qk_try = cq + (alpha*dt)**2*qddot_try
-            _, b_try = update_matrix_eq(asy, t, qk_try, vk_try)
-            g_prev = g
-            g = np.linalg.norm(A0 @ x_try - b_try)
-
-            # simple backtracking if residual grew
-            if g > g_prev:
-                eta = 0.5
-                accepted = False
-                while eta > 1e-3:
-                    x_eta = x + eta*correction
-                    qddot_eta = x_eta[:asy.nq]
-                    vk_eta = cv + alpha*dt*qddot_eta
-                    qk_eta = cq + (alpha*dt)**2*qddot_eta
-                    _, b_eta = update_matrix_eq(asy, t, qk_eta, vk_eta)
-                    g_eta = np.linalg.norm(A0 @ x_eta - b_eta)
-                    if g_eta <= g_prev:
-                        x, qdotdot, vk, qk, g = x_eta, qddot_eta, vk_eta, qk_eta, g_eta
-                        accepted = True
-                        break
-                    eta *= 0.5
-                if not accepted:
-                    x, qdotdot, vk, qk = x_try, qddot_try, vk_try, qk_try  # accept anyway
-            else:
-                x, qdotdot, vk, qk = x_try, qddot_try, vk_try, qk_try
-                
-            phi_norm = np.linalg.norm(asy.get_phi(t), ord=np.inf)
-            vel_norm = np.linalg.norm(asy.get_Phi_q() @ vk - asy.get_nu(t), ord=np.inf)
-
-            crit_res = np.linalg.norm(correction)        
-            if crit_res < 1e-6:
-                # Passable result
-                # One more position and velocity correction for consistency
-                vk = cv + qdotdot*alpha*dt
-                qk = cq + qdotdot*((alpha*dt)**2)
-                break
-
-            if k == max_inner_its-1:
-                print(f"t={t}: Inner state did not fully converge after {max_inner_its} iterations. Residual = {crit_res}.")
-
-        # Some acceptance criteria to break Inner Loop
-        solve_fail = False
-        tot, kin, pot = asy.get_energy(vk)
-        energy_resd = np.abs(tot - energy0)
-        # Do nothing with energy for now
-
-        phi = asy.get_phi(t)
-        if np.linalg.norm(phi) > 1e-6:
-            solve_fail = True
-
-        nu = asy.get_nu(t)
-        Phi_q = asy.get_Phi_q()
-        vel_resd = Phi_q @ vk - nu            
-        if np.linalg.norm(vel_resd) > 1e-6:
-            solve_fail = True
-
-        # Time step
-        qnm2 = qnm1.copy()
-        vnm2 = vnm1.copy()
-        qnm1 = qn.copy()
-        vnm1 = vn.copy()
-        qn = qk.copy()
-        vn = vk.copy()
+            if np.isnan(delta_norm) or np.isnan(gk_norm) or np.isnan(correction_norm):
+                raise Exception("Overflow")
         
-        # Record results
-        if step_num % write_increment == 0:
-            times.append(t)
-            q_results.append(qn)
-            # TODO: Calculate reaction forces if desired
+        qnm2 = deepcopy(qnm1)
+        qnm1 = deepcopy(qn)
+        vnm2 = deepcopy(vnm1)
+        vnm1 = deepcopy(vn)
 
-        alpha = 0.66667     # Only 1.0 for first time step
-        step_num += 1
+        # One last correction for consistency
+        an = ak
+        vn = vstar + an*beta0*dt
+        qn = qstar + an*((beta0*dt)**2)
+        _, _ = update_matrix_eq(asy, t, qn, vn)
 
-    sim_time = time.perf_counter() - solver_start
-    print(f"{sim_time = }")
-    #return np.array(ts), np.array(r_hist), np.array(w_hist), np.array(tau_hist), np.array(vviol_hist), sim_time
-    assert len(q_results) == len(times)
+        # Record
+        q_results.append(qn)
+        times.append(t)
+    
     return q_results, times
+
 
 def run_dynamics_hht(asy, dt, end_time, write_increment=1):
     qn = asy.pack_q()
