@@ -9,15 +9,17 @@ from simEngine3D.Bodies import RigidBody
 from simEngine3D.KCons import DP1, DP2, CD, D
 from simEngine3D.Post import write_xdmf, write_xlsx
 from simEngine3D.Geometry import Link
-from simEngine3D.solvers import run_dynamics_hht, run_dynamics
+from simEngine3D.solvers import run_dynamics
 
 def split_sys_q(lst_qsys, asy):
     out = {bdy.name : [] for bdy in asy.bodies}
     for qsys in lst_qsys:
         for bdy in asy.bodies:
             qloc = np.zeros(7)
-            qloc[0:3] = qsys[7*bdy._id:7*bdy._id+3]
-            qloc[3:7] = qsys[7*bdy._id+3:7*bdy._id+7]
+            r_id = 3*bdy._id
+            p_id = 4*bdy._id + 3*asy.nb
+            qloc[0:3] = qsys[r_id:r_id+3]
+            qloc[3:7] = qsys[p_id:p_id+4]
             out[bdy.name].append(qloc)
 
     return out
@@ -115,12 +117,12 @@ if __name__ == "__main__":
     asy.add_grav(np.array([0.0, 0.0, -9.81]))
 
     # Integrate (your current L1/L2 driver function)
-    dt = 1.0e-4
-    end_time = 5.0
+    dt = 1.0e-3
+    end_time = 1.0
     q_results, times = run_dynamics(asy,
                                     dt=dt,
                                     end_time=end_time,
-                                    write_increment=100,
+                                    write_increment=10,
                                     max_inner_its=25,
                                     relaxation=0.5,
                                     error_thres=1.0)
