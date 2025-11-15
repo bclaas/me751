@@ -174,7 +174,7 @@ class Assembly:
             #     Tb += torq
             E = bdy.ori.E
 
-            #Tb += 8.0 * (E.T @ (bdy.inertia @ (E @ bdy._pdot)))   # 4x1
+            Tb += 8.0 * (E.T @ (bdy.inertia @ (E @ bdy._pdot)))   # 4x1
             Q[p_id:p_id+4] = Tb
 
         return Q

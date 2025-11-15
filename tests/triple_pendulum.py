@@ -116,9 +116,15 @@ if __name__ == "__main__":
     asy.add_grav(np.array([0.0, 0.0, -9.81]))
 
     # Integrate (your current L1/L2 driver function)
-    dt = 1.0e-3
+    dt = 1.0e-4
     end_time = 5.0
-    q_results, times = run_dynamics(asy, dt, end_time, max_inner_its=100)
+    q_results, times = run_dynamics(asy,
+                                    dt=dt,
+                                    end_time=end_time,
+                                    write_increment=100,
+                                    max_inner_its=25,
+                                    relaxation=0.5,
+                                    error_thres=1.0)
 
     # Split results by body
     q_split = split_sys_q(q_results, asy)
@@ -156,4 +162,3 @@ if __name__ == "__main__":
     out_folder = Path(__file__).parent
     write_xlsx(results, out_folder / "triple_pendulum")
     #write_xdmf(results, out_folder / "triple_pendulum")
-    

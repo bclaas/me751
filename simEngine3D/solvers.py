@@ -1,7 +1,7 @@
 import time
+import scipy
 import numpy as np
 from copy import deepcopy
-from scipy.linalg import solve, LinAlgError
 from .Assembly import Assembly
 from .Bodies import RigidBody
 from .KCons import KCon, DP1, DP2, D, CD
@@ -26,6 +26,17 @@ def _normalize_euler(q):
             raise Exception(f"Norms not norming: {np.linalg.norm(pout)}")
     
     return qout
+
+def _solveAxb(A, b, is_sym=False):
+    try:
+        if is_sym:
+            x = scipy.linalg.solve(A, b, assume_a="sym", check_finite=False)
+        else:
+            x = scipy.linalg.solve(A, b, check_finite=False)
+    except:
+        x, *_ = np.linalg.lstsq(A, b)
+    
+    return x
 
 def _project_positions(asy, max_it=2):
     for _ in range(max_it):
@@ -68,7 +79,8 @@ def _project_velocities(asy, v):
     dv, *_ = np.linalg.lstsq(Phi_aug, rhs, rcond=None)
     return v + dv
 
-def run_dynamics(asy, dt, end_time, write_increment=1, max_inner_its=10):
+
+def run_dynamics(asy, dt, end_time, write_increment=1, max_inner_its=10, relaxation=1.0, error_thres=np.inf):
 
     def update_matrix_eq(asy, t, q, qdot):
         # Make changes to body variables themselves (they feed into A)
@@ -121,16 +133,33 @@ def run_dynamics(asy, dt, end_time, write_increment=1, max_inner_its=10):
         
         return A, b
 
-    def solveAxb(A,b):
-        try:
-            x = np.linalg.solve(A, b) # scipy.linalg.solve - Leverages symmetry of A better than np.linalg.solve.
-        except:
-            x, *_ = np.linalg.lstsq(A, b)
-        
-        return x
+    def get_jacobian(x0, asy, t, a2v, v2q):
+        # Perturb the system of equations to get Jacobian
+        # Use DEEPCOPY of assembly so state of system outside this function is unaffected
+        casy = deepcopy(asy)
+        m = len(x0)
+        n = 8*casy.nb + casy.nc
+        jac = np.empty((m,n), dtype=float)
+        eps = np.sqrt(np.finfo(float).eps)
+        #eps = 0.1
 
-    q_results = []
-    times = []
+        def g_perturbed(idx, perturbation):
+            x = x0[:]
+            x[idx] += perturbation
+            a_test = x[0:casy.nq]
+            v_test = a2v(a_test)
+            q_test = v2q(v_test)
+            A, b = update_matrix_eq(casy, t, q_test, v_test)
+            return A @ x - b
+        
+        for idx in range(m):
+            h = eps * max(1.0, abs(x0[idx]))
+            gu = g_perturbed(idx, h)    # Correction when x_idx perturbed upward
+            gd = g_perturbed(idx, -h)    # Correction when x_idx perturbed downward
+            jac[:, idx] = (gu - gd)/(2*h)
+
+        return jac
+
 
     qn = asy.pack_q()
     vn = np.zeros_like(qn)  # Or some specified IC  
@@ -142,26 +171,34 @@ def run_dynamics(asy, dt, end_time, write_increment=1, max_inner_its=10):
     vnm2 = deepcopy(vn)
 
     t = 0.0
+    step_num = 0
+    q_results = [qn]
+    times = [t]
+
     xn = np.zeros(8*asy.nb + asy.nc)    # TODO: Link this with an
 
     while t < end_time:
         t = t + dt
+        step_num += 1
         print(f"------------------- Time = {t} -------------------")
 
         # Newton Loop
-        ak = an
-        xk = xn
-        for k in range(max_inner_its):
-            # Stage 1: Compute position and velocity using BDF and most recent acceleration
-            #if k > 1:
-            #    beta0 = 2/3
-            #    qstar = 1.33333*qnm1 - 0.33333*qnm2
-            #    vstar = 1.33333*vnm1 - 0.33333*vnm2
-            #else:
-            beta0 = 1
-            qstar = qnm1
-            vstar = vnm1
+        # Stage 1a: Compute position and velocity using BDF and most recent acceleration
+        ak = an[:]
+        xk = xn[:]        
+        #if step_num > 1:
+        #    beta0 = 2/3
+        #    qstar = (4/3)*qnm1 - (1/3)*qnm2
+        #    vstar = (4/3)*vnm1 - (1/3)*vnm2
+        #else:
+        beta0 = 1
+        qstar = qnm1[:]
+        vstar = vnm1[:]
 
+        for k in range(max_inner_its):
+            print(f"Step {k}:")
+
+            # Stage 1b: Compute position and velocity using BDF and most recent acceleration
             qk = qstar + ak*((beta0*dt)**2)
             vk = vstar + ak*beta0*dt
 
@@ -170,7 +207,10 @@ def run_dynamics(asy, dt, end_time, write_increment=1, max_inner_its=10):
             gk = A @ xk - b     # Residual
             
             # Stage 3: Solve linear system to get correction
-            correction = solveAxb(A, -gk)
+            a2v = lambda a_test: vstar + a_test*beta0*dt
+            v2q = lambda v_test: qstar + v_test*(beta0*dt)
+            jac = get_jacobian(xk, asy, t, a2v, v2q)
+            correction = relaxation * _solveAxb(jac, -gk, is_sym=True)
 
             # Stage 4: Improve quality of approximated solution
             xk = xk + correction
@@ -181,7 +221,6 @@ def run_dynamics(asy, dt, end_time, write_increment=1, max_inner_its=10):
             delta_norm = np.linalg.norm(ak - aprev)
             gk_norm = np.linalg.norm(gk)
             correction_norm = np.linalg.norm(correction)
-            print(f"Step {k}:")
             print(f"\t|Delta| = {delta_norm}")
             print(f"\t|gk| = {gk_norm}")
             print(f"\t|correction| = {correction_norm}")
@@ -195,20 +234,25 @@ def run_dynamics(asy, dt, end_time, write_increment=1, max_inner_its=10):
             if np.isnan(delta_norm) or np.isnan(gk_norm) or np.isnan(correction_norm):
                 raise Exception("Overflow")
         
+        if np.any(res_norms > error_thres):
+            raise Exception(f"Residuals exceed allowable error_thres ({error_thres})")
+        
         qnm2 = deepcopy(qnm1)
         qnm1 = deepcopy(qn)
         vnm2 = deepcopy(vnm1)
         vnm1 = deepcopy(vn)
 
         # One last correction for consistency
-        an = ak
+        an = ak[:]
         vn = vstar + an*beta0*dt
-        qn = qstar + an*((beta0*dt)**2)
+        #qn = qstar + an*((beta0*dt)**2)
+        qn = qstar + vn*beta0*dt
         _, _ = update_matrix_eq(asy, t, qn, vn)
 
         # Record
-        q_results.append(qn)
-        times.append(t)
+        if step_num % write_increment == 0:
+            q_results.append(qn)
+            times.append(t)
     
     return q_results, times
 
