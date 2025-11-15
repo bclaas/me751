@@ -2,14 +2,13 @@ import numpy as np
 from copy import deepcopy
 import sys
 from pathlib import Path
-
+sys.path.append(str(Path(__file__).parent.parent))
 from simEngine3D.Assembly import Assembly
 from simEngine3D.Orientation import Orientation, A_to_p
 from simEngine3D.Bodies import RigidBody
 from simEngine3D.KCons import DP1, DP2, CD, D
-#from simEngine3D.Post import write_xdmf, write_xlsx
-from simEngine3D.Post import write_xlsx
-#from simEngine3D.Geometry import Link
+from simEngine3D.Post import write_xdmf, write_xlsx
+from simEngine3D.Geometry import Link
 from simEngine3D.solvers import run_dynamics_hht, run_dynamics
 
 def split_sys_q(lst_qsys, asy):
@@ -51,7 +50,7 @@ if __name__ == "__main__":
     link1 = RigidBody("Link1", r1, ori1)
     link1.mass = 2.0
     link1.inertia = np.diag([0.01, 0.06, 0.06])  # Jbar at COM (L-RF)
-    #link1_geo = Link(n0, n1)
+    link1_geo = Link(n0, n1)
 
     # Link 2
     f, g, h = np.array([0, 0, -1]), np.array([-1,0,0]), np.array([0,1,0])
@@ -59,7 +58,7 @@ if __name__ == "__main__":
     link2 = RigidBody("Link2", r2, ori2)
     link2.mass = 2.0
     link2.inertia = np.diag([0.01, 0.06, 0.06])
-    #link2_geo = Link(n1, n2)
+    link2_geo = Link(n1, n2)
 
     # Link 3
     f, g, h = np.array([0, 1, 0]), np.array([-1,0,0]), np.array([0,0,1])
@@ -67,7 +66,7 @@ if __name__ == "__main__":
     link3 = RigidBody("Link3", r3, ori3)
     link3.mass = 2.0
     link3.inertia = np.diag([0.01, 0.06, 0.06])
-    #link3_geo = Link(n2, n3)
+    link3_geo = Link(n2, n3)
 
     # Assembly
     asy = Assembly()
@@ -134,24 +133,24 @@ if __name__ == "__main__":
         "time": times,
         "Link1": {
             "Geometry": {
-                #"Connectivity": link1_geo.conn,
-                #"Coors": link1_geo.coors,
+                "Connectivity": link1_geo.conn,
+                "Coors": link1_geo.coors,
                 "Datum": np.array([0, 0.0, 0.0]),
             },
             "Results": q_split["Link1"]
         },
         "Link2": {
             "Geometry": {
-                #"Connectivity": link2_geo.conn,
-                #"Coors": link2_geo.coors,
+                "Connectivity": link2_geo.conn,
+                "Coors": link2_geo.coors,
                 "Datum": np.array([0, 0.0, 0.0]),
             },
             "Results": q_split["Link2"]
         },
         "Link3": {
             "Geometry": {
-                #"Connectivity": link3_geo.conn,
-                #"Coors": link3_geo.coors,
+                "Connectivity": link3_geo.conn,
+                "Coors": link3_geo.coors,
                 "Datum": np.array([0, 0.0, 0.0]),
             },
             "Results": q_split["Link3"]
@@ -161,4 +160,4 @@ if __name__ == "__main__":
     # Write results (adjust path as needed)
     out_folder = Path(__file__).parent
     write_xlsx(results, out_folder / "triple_pendulum")
-    #write_xdmf(results, out_folder / "triple_pendulum")
+    write_xdmf(results, out_folder / "triple_pendulum")

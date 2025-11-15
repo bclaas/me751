@@ -186,22 +186,22 @@ def run_dynamics(asy, dt, end_time, write_increment=1, max_inner_its=10, relaxat
         # Stage 1a: Compute position and velocity using BDF and most recent acceleration
         ak = an[:]
         xk = xn[:]        
-        #if step_num > 1:
-        #    beta0 = 2/3
-        #    qstar = (4/3)*qnm1 - (1/3)*qnm2
-        #    vstar = (4/3)*vnm1 - (1/3)*vnm2
-        #else:
-        beta0 = 1
-        qstar = qnm1[:]
-        vstar = vnm1[:]
+        if step_num > 1:
+            beta0 = 2/3
+            qstar = (4/3)*qn - (1/3)*qnm1
+            vstar = (4/3)*vn - (1/3)*vnm1
+        else:
+            beta0 = 1
+            qstar = qn[:]
+            vstar = vn[:]
 
         for k in range(max_inner_its):
             print(f"Step {k}:")
 
             # Stage 1b: Compute position and velocity using BDF and most recent acceleration
-            qk = qstar + ak*((beta0*dt)**2)
             vk = vstar + ak*beta0*dt
-
+            qk = qstar + vk*beta0*dt
+            
             # Stage 2: Compute residual of NL system
             A, b = update_matrix_eq(asy, t, qk, vk)     # Updates q and \dot{q} for all bodies, updates EOM & KCon phi values
             gk = A @ xk - b     # Residual
@@ -244,8 +244,8 @@ def run_dynamics(asy, dt, end_time, write_increment=1, max_inner_its=10, relaxat
 
         # One last correction for consistency
         an = ak[:]
+        xn = xk[:]
         vn = vstar + an*beta0*dt
-        #qn = qstar + an*((beta0*dt)**2)
         qn = qstar + vn*beta0*dt
         _, _ = update_matrix_eq(asy, t, qn, vn)
 
@@ -254,121 +254,6 @@ def run_dynamics(asy, dt, end_time, write_increment=1, max_inner_its=10, relaxat
             q_results.append(qn)
             times.append(t)
     
-    return q_results, times
-
-
-def run_dynamics_hht(asy, dt, end_time, write_increment=1):
-    qn = asy.pack_q()
-    vn = np.zeros_like(qn)
-    qnm1 = qn.copy()
-    vnm1 = vn.copy()
-    t = 0.0
-
-    # HHT parameter (alpha<=0). alpha=0 -> your current BDF2-like scheme.
-    a_hht = -0.10
-
-    # BDF2 "gamma" factor used in your update; 1.0 on the first step, then 2/3.
-    alpha_bdf = 1.0
-
-    # KKT sizes
-    problem_size = asy.nq + asy.nb + asy.nc
-    A = np.zeros((problem_size, problem_size))
-    b = np.zeros(problem_size)
-
-    mstart = 0
-    mend = 3*asy.nb
-    jpstart = mend
-    jpend = jpstart + 4*asy.nb
-
-    q_results = []
-    times = []
-
-    step_num = 0
-    while t < end_time - 1e-15:
-        t_next = t + dt
-
-        # BDF2 predictors
-        vstar = 1.33333*vn - 0.33333*vnm1
-        qstar = 1.33333*qn - 0.33333*qnm1
-
-        # Iterates
-        qk = qstar.copy()
-        vk = vstar.copy()
-
-        MAX_INNER_ITS = 10
-        for inner_it in range(MAX_INNER_ITS):
-            qk = _normalize_euler(qk)
-
-            # Matrices at n+1 (qk)
-            asy.unpack_q(qk)
-            M  = asy.mass_matrix()
-            Jp = asy.inertia_matrix()
-
-            # HHT alpha-shifted state for forces/constraints: x_{n+α} = (1+α)x_{n+1} - α x_n
-            q_alpha = (1.0 + a_hht)*qk - a_hht*qn
-            v_alpha = (1.0 + a_hht)*vk - a_hht*vn
-            t_alpha = t_next + a_hht*dt
-
-            # Evaluate Phi, P, Q, gammas at n+α
-            asy.unpack_q(q_alpha)
-            Phi_q = asy.get_Phi_q()
-            Pmat = asy.p_matrix()
-
-            # Assemble KKT
-            A.fill(0.0); b.fill(0.0)
-            A[mstart:mend, mstart:mend]       = M
-            A[jpstart:jpend, jpstart:jpend]   = Jp
-
-            Phi_aug = np.zeros((asy.nb + asy.nc, asy.nq))
-            Phi_aug[0:asy.nb, 3*asy.nb:] = Pmat       # Euler-parameter normalization rows
-            Phi_aug[asy.nb:, :]          = Phi_q      # Joint rows
-
-            A[jpend:, :jpend] = Phi_aug
-            A[:jpend, jpend:] = Phi_aug.T
-
-            # RHS: generalized forces at n+α
-            b[:asy.nq] = asy.generalized_forces(t_alpha)
-
-            # gamma^P at n+alpha using v_alpha
-            for k in range(asy.nb):
-                pdot_k = v_alpha[7*k+3:7*k+7]
-                b[asy.nq + k] = -(pdot_k @ pdot_k)
-
-            # gamma_hat for joints at n+α using v_alpha
-            if asy.nc > 0:
-                b[asy.nq + asy.nb:] = asy.gamma(t_alpha, v_alpha)
-
-            # Solve for qddot and multipliers
-            try:
-                x = np.linalg.solve(A, b)
-            except np.linalg.LinAlgError:
-                x, *_ = np.linalg.lstsq(A, b, rcond=None)
-
-            a_new = x[:asy.nq]
-
-            # BDF2 corrector (your pattern)
-            vk = vstar + alpha_bdf*dt*a_new
-            qk = qstar + alpha_bdf*dt*vk
-
-            # Convergence check at n+alpha
-            asy.unpack_q((1.0 + a_hht)*qk - a_hht*qn)
-            phi = asy.get_phi(t_alpha)
-            nu  = asy.get_nu(t_alpha)
-            if np.linalg.norm(phi) < 1e-6 and np.linalg.norm(Phi_q @ vk - nu) < 1e-6:
-                break
-            if inner_it == MAX_INNER_ITS - 1:
-                print(f"t={t_next}: inner iterations did not converge.")
-
-        # Accept step
-        qnm1, vnm1 = qn, vn
-        qn,   vn   = qk.copy(), vk.copy()
-        alpha_bdf  = 0.66667  # switch to BDF2 after the first step
-
-        times.append(t)
-        q_results.append(qn)
-
-        t = t_next
-
     return q_results, times
 
 
