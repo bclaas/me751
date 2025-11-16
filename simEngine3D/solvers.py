@@ -13,20 +13,6 @@ def torque_from_lam(asy, lam_joint):
     tau = 0.5*asy.bodies[0].ori.E @ Qp
     return tau
 
-def _normalize_euler(q):
-    nb = len(q) // 7
-    qout = np.zeros_like(q)
-    qout[0:3*nb] = q[0:3*nb]
-    for ii in range(nb):
-        a = 3*nb + 4*ii
-        p = q[a:a+4]
-        pout = p / np.linalg.norm(p)
-        qout[a:a+4] = pout
-        if np.linalg.norm(pout)-1 > 1e-3:
-            raise Exception(f"Norms not norming: {np.linalg.norm(pout)}")
-    
-    return qout
-
 def _solveAxb(A, b, is_sym=False):
     try:
         if is_sym:
@@ -38,62 +24,11 @@ def _solveAxb(A, b, is_sym=False):
     
     return x
 
-def _project_positions(asy, max_it=2):
-    for _ in range(max_it):
-        # residual
-        phi_base = asy.get_phi(0.0)        # f(t)=0 for your test
-        phiP = []
-        for b in asy.bodies:
-            p = b.ori.p
-            phiP.append(0.5*(p @ p - 1.0))
-        varphi = np.hstack([phiP, phi_base])
-
-        # jacobian
-        Phi_q = asy.get_Phi_q()
-        P = asy.p_matrix()                 # rows are p_i^T in the right 4 columns
-        Phi_aug = np.zeros((asy.nb + asy.nc, 7*asy.nb))
-        Phi_aug[0:asy.nb, 3*asy.nb:] = P   # P only touches p columns in r-p
-        Phi_aug[asy.nb:, :] = Phi_q
-
-        # solve and update
-        dq, *_ = np.linalg.lstsq(Phi_aug, -varphi, rcond=None)
-        q = asy.pack_q() + dq
-        # cheap renorm per-body
-        for i,b in enumerate(asy.bodies):
-            b.r = q[7*i:7*i+3]
-            b.ori.set_p(q[7*i+3:7*i+7])
-
-def _project_velocities(asy, v):
-    Phi_q = asy.get_Phi_q()
-    P = asy.p_matrix()
-    Phi_aug = np.zeros((asy.nb + asy.nc, 7*asy.nb))
-    Phi_aug[0:asy.nb, 3*asy.nb:] = P
-    Phi_aug[asy.nb:, :] = Phi_q
-
-    # build nu_aug = [0; nu]
-    nu = asy.get_nu(0.0)
-    nu_aug = np.zeros(asy.nb + asy.nc)
-    nu_aug[asy.nb:] = nu
-
-    rhs = nu_aug - Phi_aug @ v
-    dv, *_ = np.linalg.lstsq(Phi_aug, rhs, rcond=None)
-    return v + dv
-
 
 def run_dynamics(asy, dt, end_time, write_increment=1, max_inner_its=10, relaxation=1.0, error_thres=np.inf):
 
-    def update_matrix_eq(asy, t, q, qdot):
-        # Make changes to body variables themselves (they feed into A)
-        rs = q[0:3*asy.nb]
-        ps = q[3*asy.nb:]            
-        rdots = qdot[0:3*asy.nb]
-        pdots = qdot[3*asy.nb:]
-        for bdy in asy.bodies:
-            bdy.r = rs[3*bdy._id:3*bdy._id+3]
-            bdy.ori.set_p(ps[4*bdy._id:4*bdy._id+4])
-            bdy._rdot = rdots[3*bdy._id:3*bdy._id+3]
-            bdy._pdot = pdots[4*bdy._id:4*bdy._id+4]
-
+    def get_matrix_eq(t):
+        """Get matrix equation based on current state of asy"""
         problem_size = 8*asy.nb + asy.nc
         A = np.zeros((problem_size, problem_size))
         b = np.zeros(problem_size)
@@ -124,7 +59,7 @@ def run_dynamics(asy, dt, end_time, write_increment=1, max_inner_its=10, relaxat
 
         # Add gamma^P to b
         for bdy in asy.bodies:
-            b[asy.nq + bdy._id] = -(bdy._pdot.T @ bdy._pdot)
+            b[asy.nq + bdy._id] = -2*(bdy._pdot.T @ bdy._pdot)  # NOTE: Drop the 2 `asy.p_matrix(x2=FALSE)`. Keep 2 if `asy.p_matrix(x2=TRUE)` (default)
 
         # Add gamma_hat to b
         for ii, jnt in enumerate(asy.joints):
@@ -133,23 +68,27 @@ def run_dynamics(asy, dt, end_time, write_increment=1, max_inner_its=10, relaxat
         
         return A, b
 
-    def get_jacobian(x0, asy, t, a2v, v2q):
+    def get_jacobian(x0, t, a2v, v2q):
+        # Store current state & reset later
+        q_orig = asy.get_q()
+        qdot_orig = asy.get_qdot()
+
         # Perturb the system of equations to get Jacobian
-        # Use DEEPCOPY of assembly so state of system outside this function is unaffected
-        casy = deepcopy(asy)
         m = len(x0)
-        n = 8*casy.nb + casy.nc
+        assert m == 8*asy.nb + asy.nc
+        n = 8*asy.nb + asy.nc
         jac = np.empty((m,n), dtype=float)
         eps = np.sqrt(np.finfo(float).eps)
-        #eps = 0.1
 
         def g_perturbed(idx, perturbation):
             x = x0[:]
             x[idx] += perturbation
-            a_test = x[0:casy.nq]
+            a_test = x[0:asy.nq]
             v_test = a2v(a_test)
             q_test = v2q(v_test)
-            A, b = update_matrix_eq(casy, t, q_test, v_test)
+            asy.set_q(q_test)
+            asy.set_qdot(v_test)
+            A, b = get_matrix_eq(t)
             return A @ x - b
         
         for idx in range(m):
@@ -157,14 +96,55 @@ def run_dynamics(asy, dt, end_time, write_increment=1, max_inner_its=10, relaxat
             gu = g_perturbed(idx, h)    # Correction when x_idx perturbed upward
             gd = g_perturbed(idx, -h)    # Correction when x_idx perturbed downward
             jac[:, idx] = (gu - gd)/(2*h)
+        
+        # Reset to input state
+        asy.set_q(q_orig)
+        asy.set_qdot(qdot_orig)
 
         return jac
+    
+    def _project_positions(q_in, t):
+        # residual
+        phi_base = asy.get_phi(t)        # f(t)=0 for your test
+        phiP = []
+        for b in asy.bodies:
+            p = b.ori.p
+            phiP.append(0.5*(p @ p - 1.0))
+        varphi = np.hstack([phiP, phi_base])
 
+        # jacobian
+        Phi_q = asy.get_Phi_q()
+        P = asy.p_matrix()                 # rows are p_i^T in the right 4 columns
+        Phi_aug = np.zeros((asy.nb + asy.nc, 7*asy.nb))
+        Phi_aug[0:asy.nb, 3*asy.nb:] = P   # P only touches p columns in r-p
+        Phi_aug[asy.nb:, :] = Phi_q
 
-    qn = asy.pack_q()
-    vn = np.zeros_like(qn)  # Or some specified IC  
+        # solve and update
+        dq = _solveAxb(Phi_aug, -varphi)
+        return q_in + dq
+
+    def _project_velocities(v_in, t):
+        Phi_q = asy.get_Phi_q()
+        P = asy.p_matrix()
+        Phi_aug = np.zeros((asy.nb + asy.nc, 7*asy.nb))
+        Phi_aug[0:asy.nb, 3*asy.nb:] = P
+        Phi_aug[asy.nb:, :] = Phi_q
+
+        # build nu_aug = [0; nu]
+        nu = asy.get_nu(t)
+        nu_aug = np.zeros(asy.nb + asy.nc)
+        nu_aug[asy.nb:] = nu
+
+        rhs = nu_aug - Phi_aug @ v_in
+        dv = _solveAxb(Phi_aug, rhs)
+        return v_in + dv
+
+    qn = asy.get_q(normalize_euler=True)
+    assert np.max(asy.get_phi(0.0)) < 1e-8
+    vn = asy.get_qdot() 
     an = np.zeros_like(qn)  # Or some specific IC
 
+    # TODO: Back-calculate qnm1, etc. based on vn initial condition
     qnm1 = deepcopy(qn)
     qnm2 = deepcopy(qn)
     vnm1 = deepcopy(vn)
@@ -175,8 +155,8 @@ def run_dynamics(asy, dt, end_time, write_increment=1, max_inner_its=10, relaxat
     q_results = [qn]
     times = [t]
 
+    # x := [an, lambda^P, lambda]
     xn = np.zeros(8*asy.nb + asy.nc)    # TODO: Link this with an
-
     while t < end_time:
         t = t + dt
         step_num += 1
@@ -185,7 +165,8 @@ def run_dynamics(asy, dt, end_time, write_increment=1, max_inner_its=10, relaxat
         # Newton Loop
         # Stage 1a: Compute position and velocity using BDF and most recent acceleration
         ak = an[:]
-        xk = xn[:]        
+        xk = xn[:]
+
         if step_num > 1:
             beta0 = 2/3
             qstar = (4/3)*qn - (1/3)*qnm1
@@ -198,40 +179,49 @@ def run_dynamics(asy, dt, end_time, write_increment=1, max_inner_its=10, relaxat
         for k in range(max_inner_its):
             print(f"Step {k}:")
 
-            # Stage 1b: Compute position and velocity using BDF and most recent acceleration
+            # Stage 1b: Compute position and velocity predictors using BDF and most recent acceleration
             vk = vstar + ak*beta0*dt
             qk = qstar + vk*beta0*dt
-            
+
             # Stage 2: Compute residual of NL system
-            A, b = update_matrix_eq(asy, t, qk, vk)     # Updates q and \dot{q} for all bodies, updates EOM & KCon phi values
+            asy.set_q(qk)
+            asy.set_qdot(vk)
+            A, b = get_matrix_eq(t)     # Updates q and \dot{q} for all bodies, updates EOM & KCon phi values
             gk = A @ xk - b     # Residual
             
             # Stage 3: Solve linear system to get correction
             a2v = lambda a_test: vstar + a_test*beta0*dt
-            v2q = lambda v_test: qstar + v_test*(beta0*dt)
-            jac = get_jacobian(xk, asy, t, a2v, v2q)
+            v2q = lambda v_test: qstar + v_test*beta0*dt
+            jac = get_jacobian(xk, t, a2v, v2q)
             correction = relaxation * _solveAxb(jac, -gk, is_sym=True)
 
             # Stage 4: Improve quality of approximated solution
             xk = xk + correction
             aprev = ak
             ak = xk[0:asy.nq]
+            vkp1 = a2v(ak)      # Velocity vector if solution is accepted
+            qkp1 = v2q(vkp1)    # Position vector if solution is accepted
+            # Update asyk to confirm constraints are being met
+            asy.set_q(qkp1)
+            asy.set_qdot(vkp1)
 
             # Logging
             delta_norm = np.linalg.norm(ak - aprev)
             gk_norm = np.linalg.norm(gk)
             correction_norm = np.linalg.norm(correction)
+            phi_norm = np.linalg.norm(asy.get_phi(t))
             print(f"\t|Delta| = {delta_norm}")
             print(f"\t|gk| = {gk_norm}")
             print(f"\t|correction| = {correction_norm}")
+            print(f"\t|phi| = {phi_norm}")
 
             # Early break if converged
-            res_norms = np.array([delta_norm, gk_norm, correction_norm])
+            res_norms = np.array([delta_norm, gk_norm, correction_norm, phi_norm])
             if np.all(res_norms < 1e-6):
                 print(f"\tTerminating Newton Loop")
                 break
 
-            if np.isnan(delta_norm) or np.isnan(gk_norm) or np.isnan(correction_norm):
+            if np.any(np.isnan(res_norms)):
                 raise Exception("Overflow")
         
         if np.any(res_norms > error_thres):
@@ -247,7 +237,8 @@ def run_dynamics(asy, dt, end_time, write_increment=1, max_inner_its=10, relaxat
         xn = xk[:]
         vn = vstar + an*beta0*dt
         qn = qstar + vn*beta0*dt
-        _, _ = update_matrix_eq(asy, t, qn, vn)
+        asy.set_q(qn)
+        asy.set_qdot(vn)
 
         # Record
         if step_num % write_increment == 0:
