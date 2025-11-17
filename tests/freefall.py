@@ -53,7 +53,7 @@ if __name__ == "__main__":
     # Gravity
     asy.add_grav(np.array([0.0, 0.0, -9.81]))
 
-    # Integrate (your current L1/L2 driver function)
+    # Solve
     dt = 1.0e-4
     end_time = 1.0
     q_results, times = run_dynamics(asy,

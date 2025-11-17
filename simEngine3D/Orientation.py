@@ -13,6 +13,14 @@ def vec2quat(theta: float, u: np.ndarray) -> np.ndarray:
     [e1, e2, e3] = np.sin(theta/2) * u
     return np.array([e0, e1, e2, e3])
 
+def vecs2ori(f, g, h):
+    A = np.zeros((3, 3))
+    A[:, 0] = f
+    A[:, 1] = g
+    A[:, 2] = h
+    e0, e1, e2, e3 = A_to_p(A)
+    return Orientation(e0, e1, e2, e3)
+
 def tilde(v: np.ndarray):
     """
     Skew-symmetric matrix generator of a vector v

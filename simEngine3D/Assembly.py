@@ -35,23 +35,52 @@ class Assembly:
     def nc(self):
         return len(self.joints)   # TODO: Adjust when each joint has >1 ACE
 
-    def pack_q(self) -> np.ndarray:
+    def get_q(self, normalize_euler: bool=False) -> np.ndarray:
         q = np.zeros(self.nq)
         for bdy in self.bodies:
             r_id = 3*bdy._id                # Starting column of transl. DOFs within r-p form L2 matrix 'A'
             p_id = 4*bdy._id + 3*self.nb    # Starting column of rot. DOFs within r-p form L2 matrix 'A'
             q[r_id:r_id+3] = bdy.r
             p = bdy.ori.p
-            q[p_id:p_id+4] = p / np.linalg.norm(p)  # Ensure euler parameter normalization
+            if normalize_euler:
+                q[p_id:p_id+4] = p / np.linalg.norm(p)  # Ensure euler parameter normalization
+            else:
+                q[p_id:p_id+4] = p
+
         return q
 
-    def unpack_q(self, q: np.ndarray):
+    def get_qdot(self) -> np.ndarray:
+        qdot = np.zeros(self.nq)
         for bdy in self.bodies:
             r_id = 3*bdy._id                # Starting column of transl. DOFs within r-p form L2 matrix 'A'
             p_id = 4*bdy._id + 3*self.nb    # Starting column of rot. DOFs within r-p form L2 matrix 'A'
+            qdot[r_id:r_id+3] = bdy._rdot
+            qdot[p_id:p_id+4] = bdy._pdot
+
+        return qdot
+    
+    def set_q(self, q: np.ndarray, normalize_euler: bool=False):
+        assert len(q) == self.nq
+
+        for bdy in self.bodies:
+            r_id = 3*bdy._id                # Starting column of transl. DOFs within r-p form L2 matrix 'A'
+            p_id = 4*bdy._id + 3*self.nb    # Starting column of rot. DOFs within r-p form L2 matrix 'A'
+
             bdy.r = q[r_id:r_id+3].copy()
             p = q[p_id:p_id+4].copy()
-            bdy.ori.set_p(p / np.linalg.norm(p))  # Ensure euler parameter normalization
+            if normalize_euler:
+                bdy.ori.set_p(p / np.linalg.norm(p))  # Ensure euler parameter normalization
+            else:
+                bdy.ori.set_p(p)
+    
+    def set_qdot(self, qdot: np.ndarray):
+        assert len(qdot) == self.nq
+        for bdy in self.bodies:
+            r_id = 3*bdy._id                # Starting column of transl. DOFs within r-p form L2 matrix 'A'
+            p_id = 4*bdy._id + 3*self.nb    # Starting column of rot. DOFs within r-p form L2 matrix 'A'
+            bdy._rdot = qdot[r_id:r_id+3].copy()
+            bdy._pdot = qdot[p_id:p_id+4].copy()
+        
 
     def get_phi(self, t: float) -> np.ndarray:
         rows = []
@@ -133,12 +162,14 @@ class Assembly:
         
         return Jp
 
-    def p_matrix(self) -> np.ndarray:
+    def p_matrix(self, x2=True) -> np.ndarray:
         """
         P (euler parameter) matrix
         | [e0, e1, e2, e3] [0,   0,  0,  0]     |
         | [0,   0,  0,  0] [e0, e1, e2, e3] ... | <- One row per body
         |        ...             ...        ... |
+        
+        If x2 == True, return 2*P as it is defined above
         """
         P = np.zeros((self.nb, 4*self.nb))
         for bdy in self.bodies:
@@ -149,6 +180,7 @@ class Assembly:
             c2 = c1 + 4
             P[bdy._id, c1:c2] = bdy.ori.p
 
+        if x2: P *= 2
         return P
 
     def generalized_forces(self, t: float) -> np.ndarray:

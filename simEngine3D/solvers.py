@@ -199,8 +199,10 @@ def run_dynamics(asy, dt, end_time, write_increment=1, max_inner_its=10, relaxat
             xk = xk + correction
             aprev = ak
             ak = xk[0:asy.nq]
-            vkp1 = a2v(ak)      # Velocity vector if solution is accepted
-            qkp1 = v2q(vkp1)    # Position vector if solution is accepted
+            #vkp1 = _project_velocities(a2v(ak), t)      # Velocity vector if solution is accepted
+            #qkp1 = _project_positions(v2q(vkp1), t)    # Position vector if solution is accepted
+            vkp1 = a2v(ak)
+            qkp1 = v2q(vkp1)
             # Update asyk to confirm constraints are being met
             asy.set_q(qkp1)
             asy.set_qdot(vkp1)
@@ -235,10 +237,12 @@ def run_dynamics(asy, dt, end_time, write_increment=1, max_inner_its=10, relaxat
         # One last correction for consistency
         an = ak[:]
         xn = xk[:]
-        vn = vstar + an*beta0*dt
-        qn = qstar + vn*beta0*dt
-        asy.set_q(qn)
+        vn = vkp1[:]
+        qn = qkp1[:]
+        asy.set_q(qkp1, normalize_euler=True)
+        vn = vkp1[:]
         asy.set_qdot(vn)
+        qn = asy.get_q()
 
         # Record
         if step_num % write_increment == 0:

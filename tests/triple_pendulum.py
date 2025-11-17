@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 from simEngine3D.Assembly import Assembly
-from simEngine3D.Orientation import Orientation, A_to_p
+from simEngine3D.Orientation import Orientation, A_to_p, vecs2ori
 from simEngine3D.Bodies import RigidBody
 from simEngine3D.KCons import DP1, DP2, CD, D
 from simEngine3D.Post import write_xdmf, write_xlsx
@@ -24,18 +24,10 @@ def split_sys_q(lst_qsys, asy):
 
     return out
 
-def vecs2ori(f, g, h):
-    A = np.zeros((3, 3))
-    A[:, 0] = f
-    A[:, 1] = g
-    A[:, 2] = h
-    e0, e1, e2, e3 = A_to_p(A)
-    return Orientation(e0, e1, e2, e3)
-
 
 # Triple pendulum
 if __name__ == "__main__":
-    # Node positions defining three 1.0-long links laid along +X
+    # Node positions of link endpoints
     n0 = np.array([0, 0, 0])
     n1 = np.array([1, 0, 0])
     n2 = np.array([1, 0, -1])
@@ -66,8 +58,8 @@ if __name__ == "__main__":
     f, g, h = np.array([0, 1, 0]), np.array([-1,0,0]), np.array([0,0,1])
     ori3 = vecs2ori(f,g,h)
     link3 = RigidBody("Link3", r3, ori3)
-    link3.mass = 2.0
-    link3.inertia = np.diag([0.01, 0.06, 0.06])
+    link3.mass = 4.0
+    link3.inertia = np.diag([0.02, 0.12, 0.12])
     link3_geo = Link(n2, n3)
 
     # Assembly
@@ -86,21 +78,21 @@ if __name__ == "__main__":
         name = f"CD01-{xyz[idx]}"
         c = np.zeros(3); c[idx] = 1.0
         cd = CD(c, ibody=link1, siPbar=siPbar, f=0.0, name=name)
-        asy.add_joint(deepcopy(cd))
+        asy.add_joint(cd)
 
     # Link 1 to Link 2 (point coincidence at Link1 right end ↔ Link2 left end)
     for idx in range(3):
         name = f"CD12-{xyz[idx]}"
         c = np.zeros(3); c[idx] = 1.0
         cd = CD(c, ibody=link2, siPbar=siPbar, jbody=link1, sjQbar=sjQbar, f=0.0, name=name)
-        asy.add_joint(deepcopy(cd))
+        asy.add_joint(cd)
 
     # Link 2 to Link 3
     for idx in range(3):
         name = f"CD23-{xyz[idx]}"
         c = np.zeros(3); c[idx] = 1.0
         cd = CD(c, ibody=link3, siPbar=siPbar, jbody=link2, sjQbar=sjQbar, f=0.0, name=name)
-        asy.add_joint(deepcopy(cd))
+        asy.add_joint(cd)
 
     for jnt in asy.joints:
         siPbar = jnt.siPbar
@@ -116,16 +108,15 @@ if __name__ == "__main__":
     # Gravity
     asy.add_grav(np.array([0.0, 0.0, -9.81]))
 
-    # Integrate (your current L1/L2 driver function)
+    # Solve
     dt = 1.0e-3
-    end_time = 1.0
+    end_time = 0.9
     q_results, times = run_dynamics(asy,
                                     dt=dt,
                                     end_time=end_time,
                                     write_increment=10,
-                                    max_inner_its=25,
-                                    relaxation=0.5,
-                                    error_thres=1.0)
+                                    max_inner_its=10,
+                                    relaxation=0.5)
 
     # Split results by body
     q_split = split_sys_q(q_results, asy)
@@ -162,4 +153,4 @@ if __name__ == "__main__":
     # Write results (adjust path as needed)
     out_folder = Path(__file__).parent
     write_xlsx(results, out_folder / "triple_pendulum")
-    write_xdmf(results, out_folder / "triple_pendulum")
+    write_xdmf(results, out_folder / "triple_pendulum_noProjection")
