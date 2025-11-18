@@ -12,6 +12,8 @@ def _cell_type_from_connectivity(conn: np.ndarray, coors: np.ndarray) -> tuple[s
     """
     conn = np.asarray(conn)
     k = conn.shape[1]
+    if k == 2:
+        return "Polyline", 2
     if k == 3:
         return "Triangle", 3
     if k == 8:
