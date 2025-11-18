@@ -2,7 +2,6 @@ import numpy as np
 from numpy.polynomial.legendre import leggauss
 from dataclasses import dataclass
 from typing import List, Tuple
-from .Orientation import Orientation, vec2quat, tilde
 from .Material import Material
 
 
@@ -12,27 +11,42 @@ class Node:
     y: float
     z: float
     nid: float  # Node ID
+    x_fixed = False
+    y_fixed = False
+    z_fixed = False
 
 
 class Element:
     """General Element to inherit from"""
 
-    def __init__(self, nids: List[int], mat: Material):
-        self.node_ids = tuple(nids)
+    def __init__(self, nodes: List[Node], mat: Material, n_gauss_pts: List[int]=[4, 2, 2]):
+        self.nodes = tuple(nodes)
         self.mat = mat
+        self.n_gauss_pts = n_gauss_pts
+    
+    @property
+    def volume(self):
+        return self.length * self.width * self.height
+    
+    @property
+    def mass(self):
+        return self.volume * self.mat.density
+
+    def eval_shape_funcs(self, u, v, w):
+        return np.array([s(u,v,w) for s in self.shape_funcs])
 
 
 class B3_24(Element):
     """B3-24 beam. 3D, 2-node, 4 nodal unknowns per node."""
-    def __init__(self, nodes: List[Node], mat: Material, length: float, width: float, height: float):
+    def __init__(self, nodes: List[Node], mat: Material, length: float, width: float, height: float, n_gauss_pts: List[int]=[4, 2, 2]):
         # Assumes nodes == [p1, p2]
         assert len(nodes) == 2
         self.n_nodal_unknowns = 8
-        super().__init__(nodes, mat)
+        super().__init__(nodes, mat, n_gauss_pts)
         self.length = length        # TODO: Eliminate this; calculate based on ICs of nodes.
         self.width = width
         self.height = height
-        # TODO: Compute x-sectional areas and moments of inertia?
+        self.n_gauss_pts = n_gauss_pts
 
         L = length
         self.shape_funcs = [
@@ -45,17 +59,25 @@ class B3_24(Element):
             lambda u,v,w: 0.5*v + (u*v)/L,
             lambda u,v,w: 0.5*w + (u*w)/L,
         ]
-    
-    @property
-    def volume(self):
-        return self.length * self.width * self.height
-    
-    @property
-    def mass(self):
-        return self.volume * self.mat.density
-
-    def eval_shape_funcs(self, u, v, w):
-        return np.array([s(u,v,w) for s in self.shape_funcs])
+        
+        self._gauss_pts = []
+        # tensor-product Legendre points in physical (u,v,w), with correct weights
+        xu, wu = leggauss(n_gauss_pts[0])
+        xv, wv = leggauss(n_gauss_pts[1])
+        xw, ww = leggauss(n_gauss_pts[2])
+        J = self._J()
+        for i, xi in enumerate(xu):
+            u = 0.5 * self.length * xi
+            wi = wu[i]
+            for j, xj in enumerate(xv):
+                v = 0.5 * self.width * xj
+                wj = wv[j]
+                for k, xk in enumerate(xw):
+                    w = 0.5 * self.height * xk
+                    wk = ww[k]
+                    wgt = J * wi * wj * wk
+                    gp = (u, v, w, wgt)
+                    self._gauss_pts.append(gp)
 
     def basis(self, u, v, w):
         return np.array([1.0, u, v, w, u * v, u * w, u * u, u ** 3], dtype=float)
@@ -80,36 +102,19 @@ class B3_24(Element):
     def _J(self):
         return (self.length * self.width * self.height) / 8.0
 
-    def _gauss_points(self, nu=4, nv=2, nw=2):
-        # tensor-product Legendre points in physical (u,v,w), with correct weights
-        xu, wu = leggauss(nu)
-        xv, wv = leggauss(nv)
-        xw, ww = leggauss(nw)
-        J = self._J()
-        for i, xi in enumerate(xu):
-            u = 0.5 * self.length * xi
-            wi = wu[i]
-            for j, xj in enumerate(xv):
-                v = 0.5 * self.width * xj
-                wj = wv[j]
-                for k, xk in enumerate(xw):
-                    w = 0.5 * self.height * xk
-                    wk = ww[k]
-                    yield u, v, w, (J * wi * wj * wk)
-
-    def mass_matrix(self, nu=4, nv=2, nw=2):
+    def mass_matrix(self):
         mbar = np.zeros((8, 8))
         rho = self.mat.density
-        for u, v, w, wt in self._gauss_points(nu, nv, nw):
+        for (u, v, w, wt) in self._gauss_points:
             s = self.eval_shape_funcs(u,v,w)
             mbar += rho * wt * np.outer(s, s)
         M = np.kron(mbar, np.eye(3))   # 24x24 TL mass
         return mbar, M
 
-    def gravity_force(self, gvec, nu=4, nv=2, nw=2):
+    def gravity_force(self, gvec):
         rho = self.mat.density
         mg = np.zeros(8)
-        for u, v, w, wt in self._gauss_points(nu, nv, nw):
+        for (u, v, w, wt) in self._gauss_points:
             s = self.eval_shape_funcs(u,v,w)
             mg += rho * wt * s
         f = np.zeros(24)
@@ -117,15 +122,13 @@ class B3_24(Element):
             f[3*a:3*a+3] = mg[a] * gvec
         return f
 
-    def internal_force(self, e, nu=5, nv=3, nw=3):
+    def internal_force(self, e):
         """
         e is either (24,) in node-major [x0,y0,z0, x1, ...] or (3,8) with node columns.
         """
         assert isinstance(e, np.ndarray)
-        # material
 
         #TODO: Write for general case. Currently expects SVK.
-        mat = self.mat
 
         # current nodal positions N_nodes (3x8)
         if e.ndim == 1 and e.size == 24:
@@ -136,7 +139,7 @@ class B3_24(Element):
             raise ValueError("e must be (24,) or (3,8)")
 
         f3x8 = np.zeros((3, 8))
-        for u, v, w, wt in self._gauss_points(nu, nv, nw):
+        for (u, v, w, wt) in self._gauss_points:
             Huvw = self.H(u,v,w)
             su = Huvw[:,0]
             sv = Huvw[:,1]
@@ -145,7 +148,7 @@ class B3_24(Element):
             rv = N_nodes @ sv
             rw = N_nodes @ sw
             F  = np.column_stack((ru, rv, rw))          # deformation gradient
-            P = mat.PK1(F)
+            P = self.mat.PK1(F)
             for a in range(8):
                 f3x8[:, a] += wt * (su[a] * P[:, 0] + sv[a] * P[:, 1] + sw[a] * P[:, 2])
 
@@ -168,18 +171,3 @@ class B3_24(Element):
         for ii in range(self.n_nodal_unknowns):
             f[3*ii:3*ii+3] = s[ii] * f_ext
         return f
-
-
-class ANCFBody:
-    def __init__(self, name: str, r: np.ndarray, ori: Orientation):
-        self.name = name
-        self.r = r
-        self.ori = Orientation  # Is this tracked for the body as a whole?
-        self._id = None # TBD
-        self._is_ground = False  # read-only
-        self.elements = []
-    
-    @property
-    def _is_ground(self):
-        # read-only. ANCFBody can not be ground.
-        return False
