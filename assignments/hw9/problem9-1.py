@@ -406,7 +406,7 @@ if __name__ == "__main__":
     runtime = time.perf_counter() - start_time
     print(f"Solver Time = {runtime}")
     
-    z_pos_tip = [tip_xyz[k][-1] for k in range(tip_xyz)]
+    z_pos_tip = [tip_xyz[k][-1] for k in range(len(tip_xyz))]
     fig = plt.figure()
     plt.plot(times, z_pos_tip)
     plt.grid()
